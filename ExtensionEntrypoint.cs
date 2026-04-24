@@ -1,5 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.VisualStudio.Extensibility;
+using sp2rdlGenExtension.Generation;
+using sp2rdlGenExtension.Services;
 
 namespace sp2rdlGenExtension
 {
@@ -25,7 +27,10 @@ namespace sp2rdlGenExtension
         {
             base.InitializeServices(serviceCollection);
 
-            // You can configure dependency injection here by adding services to the serviceCollection.
+            serviceCollection.AddSingleton<RdlBuilder>();
+            serviceCollection.AddSingleton<ReportOutputWriter>();
+            serviceCollection.AddSingleton<ReportDialogService>();
+            serviceCollection.AddSingleton<SqlIntrospector>();
         }
     }
 }

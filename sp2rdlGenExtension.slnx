@@ -1,3 +1,5 @@
 <Solution>
-  <Project Path="sp2rdlGenExtension.csproj" />
+  <Project Path="sp2rdlGenExtension.csproj">
+    <Deploy Solution="Debug|*" />
+  </Project>
 </Solution>
