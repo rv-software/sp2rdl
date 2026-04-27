@@ -4,6 +4,7 @@ using Microsoft.VisualStudio.Extensibility.Commands;
 using Microsoft.VisualStudio.Extensibility.Shell;
 using Microsoft.VisualStudio.ProjectSystem.Query;
 using sp2rdlGenExtension.Generation;
+using sp2rdlGenExtension.Model;
 using sp2rdlGenExtension.Services;
 using System.Diagnostics;
 using System.IO;
@@ -83,8 +84,12 @@ namespace sp2rdlGenExtension
                     return;
                 }
 
+                var outputPath = ResolveOutputPath(request, solutionDirectory);
+                request.ReportModel.OutputPath = outputPath;
+                this.outputWriter.Write(outputPath, request.ReportModel);
+
                 await this.Extensibility.Shell().ShowPromptAsync(
-                    $"Setup dialog returned request for '{request.ReportModel.Name}'. Generation wiring is next.",
+                    $"Report generated:{Environment.NewLine}{outputPath}",
                     PromptOptions.OK,
                     cancellationToken);
             }
@@ -142,6 +147,26 @@ namespace sp2rdlGenExtension
             }
 
             return Directory.GetCurrentDirectory();
+        }
+
+        private static string ResolveOutputPath(ReportGenerationRequest request, string solutionDirectory)
+        {
+            if (!string.IsNullOrWhiteSpace(request.OutputPath))
+            {
+                return request.OutputPath;
+            }
+
+            var reportName = string.IsNullOrWhiteSpace(request.ReportModel.Name)
+                ? "Report"
+                : request.ReportModel.Name.Trim();
+
+            foreach (var invalid in Path.GetInvalidFileNameChars())
+            {
+                reportName = reportName.Replace(invalid, '_');
+            }
+
+            var extension = request.ReportModel.OutputMode == Model.OutputMode.Rdlc ? ".rdlc" : ".rdl";
+            return Path.Combine(solutionDirectory, reportName + extension);
         }
 
         [DllImport("user32.dll")]

@@ -18,13 +18,19 @@ internal sealed class ReportModel
 
     public string? OutputPath { get; set; }
 
-    public string SharedDataSourceName { get; set; } = "MainDS";
+    public string BaseFontFamily { get; set; } = "Arial";
 
-    public string MainDatasetName { get; set; } = "DsMain";
+    public string SharedDataSourceName { get; set; } = "dsrMain";
+
+    public string MainDatasetName { get; set; } = "dsMain";
 
     public List<DatasetConfig> Datasets { get; set; } = new();
 
     public List<ReportParameter> Parameters { get; set; } = new();
+
+    public ReportTitleConfig ReportTitle { get; set; } = new();
+
+    public CompanyInfoConfig CompanyInfo { get; set; } = new();
 
     public PageSetupConfig PageSetup { get; set; } = new();
 

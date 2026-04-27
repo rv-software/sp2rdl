@@ -4,6 +4,8 @@ internal sealed class PageFooterConfig
 {
     public bool Enabled { get; set; } = true;
 
+    public string LeftText { get; set; } = string.Empty;
+
     public string? LogoImagePath { get; set; }
 
     public bool ShowPageNumber { get; set; } = true;

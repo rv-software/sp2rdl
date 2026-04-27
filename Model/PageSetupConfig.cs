@@ -2,6 +2,8 @@ namespace sp2rdlGenExtension.Model;
 
 internal sealed class PageSetupConfig
 {
+    public string PageSizeName { get; set; } = "A4";
+
     public PageOrientation Orientation { get; set; } = PageOrientation.Portrait;
 
     public double WidthInCentimeters { get; set; } = 21.0d;

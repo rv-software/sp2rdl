@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Win32;
 using sp2rdlGenExtension.Model;
 using sp2rdlGenExtension.Persistence;
@@ -14,9 +15,36 @@ namespace sp2rdlGenExtension.Dialogs;
 #pragma warning disable CS0618 // Project decision: use System.Data.SqlClient for VSIX compatibility.
 public partial class ReportSetupDialog : Window
 {
+    private static readonly IReadOnlyList<string> SqlTypeNames =
+    [
+        "bit",
+        "tinyint",
+        "smallint",
+        "int",
+        "bigint",
+        "decimal(18,2)",
+        "numeric(18,2)",
+        "money",
+        "float",
+        "real",
+        "date",
+        "datetime",
+        "datetime2",
+        "time",
+        "uniqueidentifier",
+        "char",
+        "varchar",
+        "nvarchar",
+        "text",
+        "binary",
+        "varbinary"
+    ];
+
     private readonly string solutionDirectory;
     private readonly SqlIntrospector sqlIntrospector;
     private readonly ObservableCollection<DatasetFieldDraft> fieldDrafts = new();
+    private readonly ObservableCollection<ReportParameter> reportParameters = new();
+    private readonly CancellationTokenSource cts = new();
     private StoredProcedureMetadata? currentMetadata;
 
     internal ReportGenerationRequest Request { get; private set; } = new();
@@ -26,7 +54,41 @@ public partial class ReportSetupDialog : Window
         this.solutionDirectory = solutionDirectory;
         this.sqlIntrospector = sqlIntrospector;
         InitializeComponent();
+        LoadInstalledFonts();
+        ColFieldSqlType.ItemsSource = SqlTypeNames;
+        ColParameterSqlType.ItemsSource = SqlTypeNames;
+        ColParameterControlType.ItemsSource = Enum.GetValues(typeof(ControlType));
         GridFields.ItemsSource = this.fieldDrafts;
+        GridReportParameters.ItemsSource = this.reportParameters;
+        GridReportParameters.RowEditEnding += GridReportParameters_RowEditEnding;
+        this.Closed += OnClosed;
+    }
+
+    private void GridReportParameters_RowEditEnding(object? sender, DataGridRowEditEndingEventArgs e)
+        => SortReportParametersByOrdinal();
+
+    private void LoadInstalledFonts()
+    {
+        var fontFamilies = Fonts.SystemFontFamilies
+            .Select(fontFamily => fontFamily.Source)
+            .Where(fontFamily => !string.IsNullOrWhiteSpace(fontFamily))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .OrderBy(fontFamily => fontFamily, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        CmbBaseFont.ItemsSource = fontFamilies;
+        CmbBaseFont.SelectedItem = fontFamilies.FirstOrDefault(fontFamily =>
+            string.Equals(fontFamily, "Arial", StringComparison.OrdinalIgnoreCase));
+        CmbBaseFont.Text = CmbBaseFont.SelectedItem?.ToString() ?? fontFamilies.FirstOrDefault() ?? "Arial";
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        if (!this.cts.IsCancellationRequested)
+        {
+            this.cts.Cancel();
+        }
+        this.cts.Dispose();
     }
 
     private void ConnectionButton_Click(object sender, RoutedEventArgs e)
@@ -84,11 +146,12 @@ public partial class ReportSetupDialog : Window
             Cursor = System.Windows.Input.Cursors.Wait;
             LblMetadataStatus.Text = "Loading stored procedures...";
             var connectionString = TxtConnectionString.Text.Trim();
-            CmbStoredProcedure.ItemsSource = await Task.Run(() =>
-                this.sqlIntrospector.ListStoredProceduresAsync(connectionString, CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult());
+            CmbStoredProcedure.ItemsSource = await this.sqlIntrospector
+                .ListStoredProceduresAsync(connectionString, this.cts.Token);
             LblMetadataStatus.Text = "Stored procedures loaded.";
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
@@ -157,6 +220,226 @@ public partial class ReportSetupDialog : Window
         }
     }
 
+    private void BrowseOutputButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var outputMode = ReadOutputMode();
+            var extension = outputMode == OutputMode.Rdlc ? ".rdlc" : ".rdl";
+            var filter = outputMode == OutputMode.Rdlc
+                ? "RDLC report (*.rdlc)|*.rdlc|All files (*.*)|*.*"
+                : "RDL report (*.rdl)|*.rdl|All files (*.*)|*.*";
+
+            var dialog = new SaveFileDialog
+            {
+                Title = "Save generated report",
+                Filter = filter,
+                DefaultExt = extension,
+                AddExtension = true,
+                InitialDirectory = Directory.Exists(this.solutionDirectory) ? this.solutionDirectory : null,
+                FileName = BuildDefaultReportFileName(extension)
+            };
+
+            if (!string.IsNullOrWhiteSpace(TxtOutputPath.Text))
+            {
+                dialog.FileName = TxtOutputPath.Text.Trim();
+            }
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                TxtOutputPath.Text = dialog.FileName;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not choose output path:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void BrowseFooterLogoButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "Select footer logo",
+                Filter = "Image files (*.png;*.jpg;*.jpeg;*.bmp;*.gif)|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files (*.*)|*.*",
+                CheckFileExists = true
+            };
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                TxtFooterLogo.Text = dialog.FileName;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not choose footer logo:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void EditDefaultSqlButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if ((sender as FrameworkElement)?.DataContext is not ReportParameter parameter)
+        {
+            return;
+        }
+
+        var dialog = new SqlEditorDialog(
+            $"Default SQL - {parameter.Name}",
+            parameter.DefaultValueSql,
+            "SQL treba vratiti jednu vrijednost. Za konstantu mozes koristiti npr. SELECT 1 ili SELECT GETDATE().",
+            previewSqlAsync: sql => PreviewSqlAsync(sql))
+        {
+            Owner = this
+        };
+
+        if (dialog.ShowDialog() == true)
+        {
+            parameter.DefaultValueSql = NormalizeOptional(dialog.SqlText);
+        }
+    }
+
+    private void EditLookupSqlButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if ((sender as FrameworkElement)?.DataContext is not ReportParameter parameter)
+        {
+            return;
+        }
+
+        var dialog = new SqlEditorDialog(
+            $"Lookup SQL - {parameter.Name}",
+            parameter.LookupSql,
+            "SQL treba vratiti value/label kolone za valid values. Primjer: SELECT Id AS Value, Name AS Label FROM dbo.Table ORDER BY Name.",
+            suggestSqlAsync: () => SuggestLookupSqlForParameterAsync(parameter),
+            previewSqlAsync: sql => PreviewSqlAsync(sql))
+        {
+            Owner = this
+        };
+
+        if (dialog.ShowDialog() == true)
+        {
+            parameter.LookupSql = NormalizeOptional(dialog.SqlText);
+            if (!string.IsNullOrWhiteSpace(parameter.LookupSql))
+            {
+                parameter.Lookup ??= new LookupConfig
+                {
+                    DatasetName = BuildLookupDatasetName(parameter.Name)
+                };
+                parameter.Lookup.ValueField = "Value";
+                parameter.Lookup.LabelField = "Label";
+            }
+        }
+    }
+
+    private void DependsOnDropDownButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if (sender is not Button button || button.DataContext is not ReportParameter parameter)
+        {
+            return;
+        }
+
+        var availableParameters = this.reportParameters
+            .Where(candidate => !ReferenceEquals(candidate, parameter))
+            .Select(candidate => candidate.Name.Trim().TrimStart('@'))
+            .Where(name => !string.IsNullOrWhiteSpace(name)
+                && !string.Equals(name, parameter.Name.Trim().TrimStart('@'), StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var selectedValues = ParseDependencyNames(parameter.DependsOnParameterName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var contextMenu = new ContextMenu();
+
+        foreach (var parameterName in availableParameters.OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase))
+        {
+            var menuItem = new MenuItem
+            {
+                Header = parameterName,
+                IsCheckable = true,
+                IsChecked = selectedValues.Contains(parameterName),
+                StaysOpenOnClick = true
+            };
+            menuItem.Click += (_, _) =>
+            {
+                if (menuItem.IsChecked)
+                {
+                    selectedValues.Add(parameterName);
+                }
+                else
+                {
+                    selectedValues.Remove(parameterName);
+                }
+
+                parameter.DependsOnParameterName = selectedValues.Count == 0
+                    ? null
+                    : string.Join(", ", selectedValues.OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase));
+                GridReportParameters.Items.Refresh();
+            };
+            contextMenu.Items.Add(menuItem);
+        }
+
+        if (contextMenu.Items.Count == 0)
+        {
+            contextMenu.Items.Add(new MenuItem
+            {
+                Header = "No other parameters",
+                IsEnabled = false
+            });
+        }
+
+        button.ContextMenu = contextMenu;
+        contextMenu.PlacementTarget = button;
+        contextMenu.IsOpen = true;
+    }
+
+    private async Task<string?> SuggestLookupSqlForParameterAsync(ReportParameter parameter)
+    {
+        CommitPendingGridEdits();
+
+        if (string.IsNullOrWhiteSpace(TxtConnectionString.Text))
+        {
+            MessageBox.Show(this, "Connection string is required.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(parameter.Name))
+        {
+            MessageBox.Show(this, "Parameter name is required.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return null;
+        }
+
+        var suggestion = await this.sqlIntrospector.SuggestLookupSqlAsync(
+            TxtConnectionString.Text.Trim(),
+            parameter.Name,
+            GetPrimaryDependencyName(parameter.DependsOnParameterName),
+            IsMultiValueReportParameter(GetPrimaryDependencyName(parameter.DependsOnParameterName)),
+            parameter.Nullable,
+            this.cts.Token);
+
+        if (suggestion is null)
+        {
+            return null;
+        }
+
+        parameter.Lookup = new LookupConfig
+        {
+            DatasetName = suggestion.DatasetName,
+            ValueField = suggestion.ValueField,
+            LabelField = suggestion.LabelField
+        };
+
+        return suggestion.Sql;
+    }
+
+    private async Task<System.Collections.IEnumerable?> PreviewSqlAsync(string sql)
+        => (await this.sqlIntrospector.PreviewSqlAsync(TxtConnectionString.Text.Trim(), sql, this.cts.Token)).DefaultView;
+
+
     private async Task InspectProcedureAsync()
     {
         if (string.IsNullOrWhiteSpace(TxtConnectionString.Text))
@@ -178,10 +461,8 @@ public partial class ReportSetupDialog : Window
             LblMetadataStatus.Text = "Inspecting stored procedure...";
 
             var connectionString = TxtConnectionString.Text.Trim();
-            this.currentMetadata = await Task.Run(() =>
-                this.sqlIntrospector.ReadStoredProcedureAsync(connectionString, storedProcedureName, CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult());
+            this.currentMetadata = await this.sqlIntrospector
+                .ReadStoredProcedureAsync(connectionString, storedProcedureName, this.cts.Token);
 
             GridParameters.ItemsSource = this.currentMetadata.Parameters;
             this.fieldDrafts.Clear();
@@ -197,6 +478,11 @@ public partial class ReportSetupDialog : Window
             {
                 TxtReportName.Text = this.currentMetadata.ProcedureName;
             }
+
+            ApplyReportParameters(ReportModelFactory.FromStoredProcedure(this.currentMetadata).Parameters);
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
@@ -228,10 +514,8 @@ public partial class ReportSetupDialog : Window
             Cursor = System.Windows.Input.Cursors.Wait;
             LblMetadataStatus.Text = "Suggesting columns from procedure text...";
             var connectionString = TxtConnectionString.Text.Trim();
-            var suggestedFields = await Task.Run(() =>
-                this.sqlIntrospector.SuggestFieldsFromProcedureTextAsync(connectionString, storedProcedureName, CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult());
+            var suggestedFields = await this.sqlIntrospector
+                .SuggestFieldsFromProcedureTextAsync(connectionString, storedProcedureName, this.cts.Token);
 
             if (suggestedFields.Count == 0)
             {
@@ -246,6 +530,9 @@ public partial class ReportSetupDialog : Window
             }
 
             LblMetadataStatus.Text = $"Suggested {suggestedFields.Count} column(s) from the last SELECT. Review SQL types before saving.";
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
@@ -264,7 +551,7 @@ public partial class ReportSetupDialog : Window
         Request = new ReportGenerationRequest
         {
             ConnectionString = TxtConnectionString.Text.Trim(),
-            StoredProcedureName = (CmbStoredProcedure.SelectedItem as Services.StoredProcedureSummary)?.DisplayName ?? string.Empty,
+            StoredProcedureName = ReadStoredProcedureName(),
             OutputPath = TxtOutputPath.Text.Trim(),
             ReportModel = reportModel
         };
@@ -275,8 +562,13 @@ public partial class ReportSetupDialog : Window
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!this.cts.IsCancellationRequested)
+        {
+            this.cts.Cancel();
+        }
         DialogResult = false;
         Close();
+        DebugExpShutdown.TryCloseExpInstance();
     }
 
     private OutputMode ReadOutputMode()
@@ -308,6 +600,8 @@ public partial class ReportSetupDialog : Window
 
     private ReportModel BuildReportModelFromCurrentState()
     {
+        CommitPendingGridEdits();
+
         var metadata = BuildCurrentMetadata();
         var reportModel = metadata is null
             ? BuildReportModelWithoutMetadata()
@@ -317,12 +611,26 @@ public partial class ReportSetupDialog : Window
         reportModel.Author = NormalizeOptional(TxtAuthor.Text);
         reportModel.Description = NormalizeOptional(TxtDescription.Text);
         reportModel.OutputMode = ReadOutputMode();
-        reportModel.SourceConnectionString = SanitizeConnectionString(TxtConnectionString.Text);
+        reportModel.SourceConnectionString = NormalizeOptional(TxtConnectionString.Text);
         reportModel.SourceStoredProcedureName = ReadStoredProcedureName();
         reportModel.OutputPath = NormalizeOptional(TxtOutputPath.Text);
+        reportModel.BaseFontFamily = ReadBaseFontFamily();
+        reportModel.ReportTitle.Enabled = ChkReportTitleEnabled.IsChecked == true;
+        reportModel.ReportTitle.Text = string.IsNullOrWhiteSpace(TxtReportTitle.Text)
+            ? reportModel.Name
+            : TxtReportTitle.Text.Trim();
+        reportModel.ReportTitle.ShowInPageHeaderAfterFirstPage = ChkTitleInHeader.IsChecked == true;
+        reportModel.CompanyInfo.Text = TxtCompanyName.Text.Trim();
+        reportModel.CompanyInfo.SqlExpression = NormalizeOptional(TxtCompanySql.Text);
+        reportModel.CompanyInfo.BackendEndpoint = NormalizeOptional(TxtCompanyEndpoint.Text);
         reportModel.PageSetup = BuildPageSetup();
-        reportModel.PageHeader.LeftText = TxtHeaderLeft.Text.Trim();
         reportModel.PageHeader.RightText = TxtHeaderRight.Text.Trim();
+        reportModel.PageFooter.LeftText = TxtFooterLeft.Text.Trim();
+        reportModel.PageFooter.LogoImagePath = NormalizeOptional(TxtFooterLogo.Text);
+        reportModel.Parameters = BuildReportParametersFromGrid();
+        NormalizeReportParameters(reportModel.Parameters);
+        ApplyAuxiliaryParameterDatasets(reportModel);
+        ApplyDatasetParameterBindings(reportModel);
 
         return reportModel;
     }
@@ -341,7 +649,7 @@ public partial class ReportSetupDialog : Window
 
         var dataset = new DatasetConfig
         {
-            Name = "DsMain",
+            Name = "dsMain",
             Command = storedProcedureName,
             CommandKind = CommandKind.StoredProcedure,
             Fields = fields
@@ -351,7 +659,8 @@ public partial class ReportSetupDialog : Window
         {
             Name = TxtReportName.Text.Trim(),
             MainDatasetName = dataset.Name,
-            Datasets = string.IsNullOrWhiteSpace(storedProcedureName) && fields.Count == 0 ? [] : [dataset]
+            Datasets = string.IsNullOrWhiteSpace(storedProcedureName) && fields.Count == 0 ? [] : [dataset],
+            Parameters = BuildReportParametersFromGrid()
         };
     }
 
@@ -362,8 +671,16 @@ public partial class ReportSetupDialog : Window
         TxtDescription.Text = model.Description ?? string.Empty;
         TxtConnectionString.Text = model.SourceConnectionString ?? string.Empty;
         TxtOutputPath.Text = model.OutputPath ?? string.Empty;
-        TxtHeaderLeft.Text = model.PageHeader.LeftText;
+        TxtReportTitle.Text = model.ReportTitle.Text;
+        ChkReportTitleEnabled.IsChecked = model.ReportTitle.Enabled;
+        ChkTitleInHeader.IsChecked = model.ReportTitle.ShowInPageHeaderAfterFirstPage;
+        TxtCompanyName.Text = model.CompanyInfo.Text;
+        TxtCompanySql.Text = model.CompanyInfo.SqlExpression ?? string.Empty;
+        TxtCompanyEndpoint.Text = model.CompanyInfo.BackendEndpoint ?? string.Empty;
         TxtHeaderRight.Text = model.PageHeader.RightText;
+        TxtFooterLeft.Text = model.PageFooter.LeftText;
+        TxtFooterLogo.Text = model.PageFooter.LogoImagePath ?? string.Empty;
+        SetBaseFontFamily(model.BaseFontFamily);
         SetOutputMode(model.OutputMode);
         ApplyPageSetup(model.PageSetup);
 
@@ -385,7 +702,7 @@ public partial class ReportSetupDialog : Window
             }
         }
 
-        GridReportParameters.ItemsSource = model.Parameters;
+        ApplyReportParameters(model.Parameters);
         GridParameters.ItemsSource = model.Parameters
             .Select((parameter, index) => new SpParameter(
                 "@" + parameter.Name.TrimStart('@'),
@@ -407,6 +724,248 @@ public partial class ReportSetupDialog : Window
         LblMetadataStatus.Text = "State loaded.";
     }
 
+    private void ApplyReportParameters(IEnumerable<ReportParameter> parameters)
+    {
+        this.reportParameters.Clear();
+        foreach (var parameter in NormalizeParameterOrdinals(parameters))
+        {
+            this.reportParameters.Add(parameter);
+        }
+
+    }
+
+    private static void ApplyDatasetParameterBindings(ReportModel model)
+    {
+        var mainDataset = model.Datasets.FirstOrDefault(dataset => dataset.Name == model.MainDatasetName)
+            ?? model.Datasets.FirstOrDefault();
+        if (mainDataset is null)
+        {
+            return;
+        }
+
+        mainDataset.ParameterBindings = model.Parameters
+            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.BindToDatasetParameterName))
+            .Select(parameter => new DatasetParameterBinding
+            {
+                DatasetParameterName = parameter.BindToDatasetParameterName!.Trim(),
+                ReportParameterName = parameter.Name.TrimStart('@')
+            })
+            .ToList();
+    }
+
+    private static void NormalizeReportParameters(IEnumerable<ReportParameter> parameters)
+    {
+        var ordinal = 1;
+        foreach (var parameter in parameters)
+        {
+            parameter.Name = parameter.Name.Trim().TrimStart('@');
+            parameter.Prompt = string.IsNullOrWhiteSpace(parameter.Prompt)
+                ? parameter.Name
+                : parameter.Prompt.Trim();
+            parameter.SqlTypeName = string.IsNullOrWhiteSpace(parameter.SqlTypeName)
+                ? "nvarchar"
+                : parameter.SqlTypeName.Trim();
+            parameter.DefaultValueExpression = NormalizeOptional(parameter.DefaultValueExpression ?? string.Empty);
+            parameter.DefaultValueSql = NormalizeOptional(parameter.DefaultValueSql ?? string.Empty);
+            parameter.DefaultValueDatasetName = NormalizeOptional(parameter.DefaultValueDatasetName ?? string.Empty);
+            parameter.DefaultValueField = NormalizeOptional(parameter.DefaultValueField ?? string.Empty);
+            parameter.DisplayFormat = NormalizeOptional(parameter.DisplayFormat ?? string.Empty);
+            parameter.LookupSql = NormalizeOptional(parameter.LookupSql ?? string.Empty);
+            parameter.DependsOnParameterName = NormalizeDependencyList(parameter.DependsOnParameterName, parameter.Name);
+            parameter.BindToDatasetParameterName = NormalizeOptional(parameter.BindToDatasetParameterName ?? string.Empty)?.TrimStart('@');
+
+            if (parameter.MultiValue)
+            {
+                parameter.Nullable = false;
+            }
+
+            if (parameter.OrdinalNumber <= 0)
+            {
+                parameter.OrdinalNumber = ordinal;
+            }
+
+            ordinal++;
+        }
+    }
+
+    private void CommitPendingGridEdits()
+    {
+        GridReportParameters.CommitEdit(DataGridEditingUnit.Cell, true);
+        GridReportParameters.CommitEdit(DataGridEditingUnit.Row, true);
+        GridFields.CommitEdit(DataGridEditingUnit.Cell, true);
+        GridFields.CommitEdit(DataGridEditingUnit.Row, true);
+    }
+
+    private List<ReportParameter> BuildReportParametersFromGrid()
+    {
+        SortReportParametersByOrdinal();
+
+        return this.reportParameters
+            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
+            .OrderBy(parameter => parameter.OrdinalNumber <= 0 ? int.MaxValue : parameter.OrdinalNumber)
+            .ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void SortReportParametersByOrdinal()
+    {
+        var sortedParameters = this.reportParameters
+            .OrderBy(parameter => parameter.OrdinalNumber <= 0 ? int.MaxValue : parameter.OrdinalNumber)
+            .ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (sortedParameters.SequenceEqual(this.reportParameters))
+        {
+            return;
+        }
+
+        this.reportParameters.Clear();
+        foreach (var parameter in sortedParameters)
+        {
+            this.reportParameters.Add(parameter);
+        }
+
+    }
+
+    private static IEnumerable<ReportParameter> NormalizeParameterOrdinals(IEnumerable<ReportParameter> parameters)
+    {
+        var ordinal = 1;
+        foreach (var parameter in parameters)
+        {
+            if (parameter.OrdinalNumber <= 0)
+            {
+                parameter.OrdinalNumber = ordinal;
+            }
+
+            ordinal++;
+            yield return parameter;
+        }
+    }
+
+    private static void ApplyAuxiliaryParameterDatasets(ReportModel model)
+    {
+        var generatedDatasetNames = new HashSet<string>(
+            model.Datasets.Select(dataset => dataset.Name),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var parameter in model.Parameters.Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name)))
+        {
+            if (!string.IsNullOrWhiteSpace(parameter.LookupSql))
+            {
+                parameter.Lookup ??= new LookupConfig
+                {
+                    DatasetName = BuildLookupDatasetName(parameter.Name)
+                };
+
+                parameter.Lookup.ValueField = "Value";
+                parameter.Lookup.LabelField = "Label";
+                parameter.Lookup.DatasetName = EnsureUniqueDatasetName(parameter.Lookup.DatasetName, generatedDatasetNames);
+                model.Datasets.Add(new DatasetConfig
+                {
+                    Name = parameter.Lookup.DatasetName,
+                    Command = parameter.LookupSql.Trim(),
+                    CommandKind = CommandKind.Text,
+                    Fields =
+                    [
+                        new DatasetField(parameter.Lookup.ValueField, parameter.SqlTypeName, false, 1),
+                        new DatasetField(parameter.Lookup.LabelField, "nvarchar", true, 2)
+                    ],
+                    ParameterBindings = BuildLookupParameterBindings(parameter)
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(parameter.DefaultValueSql))
+            {
+                var defaultDatasetName = EnsureUniqueDatasetName(BuildDefaultDatasetName(parameter.Name), generatedDatasetNames);
+                parameter.DefaultValueDatasetName = defaultDatasetName;
+                parameter.DefaultValueField = "Value";
+                model.Datasets.Add(new DatasetConfig
+                {
+                    Name = defaultDatasetName,
+                    Command = parameter.DefaultValueSql.Trim(),
+                    CommandKind = CommandKind.Text,
+                    Fields =
+                    [
+                        new DatasetField("Value", parameter.SqlTypeName, true, 1)
+                    ]
+                });
+            }
+        }
+    }
+
+    private static List<DatasetParameterBinding> BuildLookupParameterBindings(ReportParameter parameter)
+    {
+        if (string.IsNullOrWhiteSpace(parameter.DependsOnParameterName))
+        {
+            return [];
+        }
+
+        return ParseDependencyNames(parameter.DependsOnParameterName)
+            .Select(dependencyName => new DatasetParameterBinding
+            {
+                DatasetParameterName = "@" + dependencyName,
+                ReportParameterName = dependencyName
+            })
+            .ToList();
+    }
+
+    private static string? NormalizeDependencyList(string? dependencyList, string parameterName)
+    {
+        var currentName = parameterName.Trim().TrimStart('@');
+        var dependencies = ParseDependencyNames(dependencyList)
+            .Where(name => !string.Equals(name, currentName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return dependencies.Count == 0 ? null : string.Join(", ", dependencies);
+    }
+
+    private static List<string> ParseDependencyNames(string? dependencyList)
+        => string.IsNullOrWhiteSpace(dependencyList)
+            ? []
+            : dependencyList
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(name => name.Trim().TrimStart('@'))
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+
+    private static string? GetPrimaryDependencyName(string? dependencyList)
+        => ParseDependencyNames(dependencyList).FirstOrDefault();
+
+    private bool IsMultiValueReportParameter(string? parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(parameterName))
+        {
+            return false;
+        }
+
+        var normalizedName = parameterName.Trim().TrimStart('@');
+        return this.reportParameters.FirstOrDefault(parameter =>
+            string.Equals(parameter.Name.TrimStart('@'), normalizedName, StringComparison.OrdinalIgnoreCase))?.MultiValue == true;
+    }
+
+    private static string EnsureUniqueDatasetName(string datasetName, HashSet<string> usedNames)
+    {
+        var baseName = string.IsNullOrWhiteSpace(datasetName) ? "dsLookup" : datasetName.Trim();
+        var candidate = baseName;
+        var index = 2;
+        while (!usedNames.Add(candidate))
+        {
+            candidate = baseName + index.ToString(CultureInfo.InvariantCulture);
+            index++;
+        }
+
+        return candidate;
+    }
+
+    private static string BuildDefaultDatasetName(string parameterName)
+    {
+        var normalized = parameterName.TrimStart('@');
+        return "ds" + (string.IsNullOrWhiteSpace(normalized)
+            ? "Default"
+            : char.ToUpperInvariant(normalized[0]) + normalized[1..]) + "Default";
+    }
+
     private void SetOutputMode(OutputMode outputMode)
     {
         foreach (var item in CmbOutputMode.Items.OfType<ComboBoxItem>())
@@ -423,27 +982,33 @@ public partial class ReportSetupDialog : Window
 
     private PageSetupConfig BuildPageSetup()
     {
+        var pageSize = ReadPageSize();
         var orientation = ReadPageOrientation();
+        var (width, height) = GetPageDimensions(pageSize);
+
+        if (orientation == PageOrientation.Landscape)
+        {
+            (width, height) = (height, width);
+        }
+
         var pageSetup = new PageSetupConfig
         {
+            PageSizeName = pageSize,
             Orientation = orientation,
+            WidthInCentimeters = width,
+            HeightInCentimeters = height,
             LeftMarginInCentimeters = ReadPositiveDouble(TxtMarginLeft.Text, 1.0d),
             RightMarginInCentimeters = ReadPositiveDouble(TxtMarginRight.Text, 1.0d),
             TopMarginInCentimeters = ReadPositiveDouble(TxtMarginTop.Text, 1.0d),
             BottomMarginInCentimeters = ReadPositiveDouble(TxtMarginBottom.Text, 1.0d)
         };
 
-        if (orientation == PageOrientation.Landscape)
-        {
-            pageSetup.WidthInCentimeters = 29.7d;
-            pageSetup.HeightInCentimeters = 21.0d;
-        }
-
         return pageSetup;
     }
 
     private void ApplyPageSetup(PageSetupConfig pageSetup)
     {
+        SetPageSize(pageSetup.PageSizeName);
         SetPageOrientation(pageSetup.Orientation);
         TxtMarginLeft.Text = ToUiNumber(pageSetup.LeftMarginInCentimeters);
         TxtMarginRight.Text = ToUiNumber(pageSetup.RightMarginInCentimeters);
@@ -473,6 +1038,60 @@ public partial class ReportSetupDialog : Window
         CmbPageOrientation.SelectedIndex = 0;
     }
 
+    private string ReadPageSize()
+        => (CmbPageSize.SelectedItem as ComboBoxItem)?.Tag?.ToString()
+            ?? CmbPageSize.Text.Trim()
+            ?? "A4";
+
+    private void SetPageSize(string? pageSizeName)
+    {
+        foreach (var item in CmbPageSize.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), pageSizeName, StringComparison.OrdinalIgnoreCase))
+            {
+                CmbPageSize.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbPageSize.Text = string.IsNullOrWhiteSpace(pageSizeName) ? "A4" : pageSizeName;
+    }
+
+    private static (double Width, double Height) GetPageDimensions(string pageSizeName)
+    {
+        return pageSizeName.Trim().ToUpperInvariant() switch
+        {
+            "A3" => (29.7d, 42.0d),
+            "LETTER" => (21.59d, 27.94d),
+            "LEGAL" => (21.59d, 35.56d),
+            _ => (21.0d, 29.7d)
+        };
+    }
+
+    private string ReadBaseFontFamily()
+    {
+        var selected = CmbBaseFont.SelectedItem?.ToString();
+        var typed = CmbBaseFont.Text.Trim();
+        return string.IsNullOrWhiteSpace(typed)
+            ? (string.IsNullOrWhiteSpace(selected) ? "Arial" : selected)
+            : typed;
+    }
+
+    private void SetBaseFontFamily(string? fontFamily)
+    {
+        var normalized = string.IsNullOrWhiteSpace(fontFamily) ? "Arial" : fontFamily;
+        foreach (var item in CmbBaseFont.Items.OfType<string>())
+        {
+            if (string.Equals(item, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                CmbBaseFont.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbBaseFont.Text = normalized;
+    }
+
     private string ReadStoredProcedureName()
         => (CmbStoredProcedure.SelectedItem as StoredProcedureSummary)?.DisplayName
             ?? CmbStoredProcedure.Text.Trim();
@@ -489,6 +1108,25 @@ public partial class ReportSetupDialog : Window
         }
 
         return name + ".sp2rdl.json";
+    }
+
+    private string BuildDefaultReportFileName(string extension)
+    {
+        var name = string.IsNullOrWhiteSpace(TxtReportName.Text)
+            ? ReadStoredProcedureName()
+            : TxtReportName.Text.Trim();
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = "Report";
+        }
+
+        foreach (var invalid in Path.GetInvalidFileNameChars())
+        {
+            name = name.Replace(invalid, '_');
+        }
+
+        return name + extension;
     }
 
     private static string? NormalizeOptional(string value)
@@ -535,6 +1173,14 @@ public partial class ReportSetupDialog : Window
     {
         var parts = storedProcedureName.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return parts.Length == 2 ? parts[1] : storedProcedureName;
+    }
+
+    private static string BuildLookupDatasetName(string parameterName)
+    {
+        var normalized = parameterName.TrimStart('@');
+        return "ds" + (string.IsNullOrWhiteSpace(normalized)
+            ? "Lookup"
+            : char.ToUpperInvariant(normalized[0]) + normalized[1..]);
     }
 }
 #pragma warning restore CS0618

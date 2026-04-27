@@ -10,7 +10,7 @@ internal static class ReportModelFactory
 
         var dataset = new DatasetConfig
         {
-            Name = "DsMain",
+            Name = "dsMain",
             Command = $"{metadata.SchemaName}.{metadata.ProcedureName}",
             CommandKind = CommandKind.StoredProcedure,
             Fields = metadata.Fields.ToList(),
@@ -39,6 +39,9 @@ internal static class ReportModelFactory
                     ControlType = MapControlType(parameter.SqlTypeName),
                     Nullable = parameter.IsNullable,
                     AllowBlank = AllowsBlank(parameter.SqlTypeName),
+                    DisplayFormat = DatasetFieldDraft.GetDefaultFormat(parameter.SqlTypeName),
+                    BindToDatasetParameterName = parameter.Name,
+                    OrdinalNumber = Math.Max(parameter.OrdinalPosition, 1),
                     LayoutRow = Math.Max(parameter.OrdinalPosition - 1, 0),
                     LayoutColumn = 0
                 })
