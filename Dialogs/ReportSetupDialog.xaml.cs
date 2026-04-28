@@ -3,6 +3,7 @@ using System.Data.SqlClient;
 using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
@@ -20,6 +21,12 @@ internal sealed record Choice<T>(T Value, string Label);
 public partial class ReportSetupDialog : Window
 {
     private static readonly Regex TemplatePlaceholderRegex = new(@"\{(?<name>[A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
+    private static readonly Regex HtmlParagraphRegex = new(
+        @"<p\b(?<attributes>[^>]*)>(?<content>.*?)</p\s*>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex CssTextAlignRegex = new(
+        @"text-align\s*:\s*(?<align>left|center|right)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly IReadOnlyList<string> SqlTypeNames =
     [
@@ -537,7 +544,8 @@ public partial class ReportSetupDialog : Window
     {
         CommitPendingGridEdits();
 
-        var body = ResolveTemplatePreviewValues(editor.Text);
+        var compactTemplate = PrepareHtmlTemplateForPreview(editor.Text);
+        var body = ResolveTemplatePreviewValues(compactTemplate.Html);
         body = body.Replace("\r\n", "<br/>", StringComparison.Ordinal)
             .Replace("\n", "<br/>", StringComparison.Ordinal);
 
@@ -548,14 +556,63 @@ public partial class ReportSetupDialog : Window
 
         var html = "<!doctype html><html><head><meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\" />"
             + "<style>"
-            + "body{margin:8px;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff;}"
+            + "body{margin:8px;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;line-height:1.15;color:#111;background:#fff;}"
             + "p{margin:0;line-height:1.15;}ul,ol{margin-top:0;margin-bottom:4px;padding-left:22px;}"
             + "</style></head><body>"
+            + "<div style=\"text-align:" + compactTemplate.CssTextAlign + ";\">"
             + body
+            + "</div>"
             + "</body></html>";
 
         preview.NavigateToString(html);
     }
+
+    private static HtmlTemplateForPreview PrepareHtmlTemplateForPreview(string template)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return new HtmlTemplateForPreview(string.Empty, "left");
+        }
+
+        var matches = HtmlParagraphRegex.Matches(template);
+        if (matches.Count == 0)
+        {
+            return new HtmlTemplateForPreview(template, "left");
+        }
+
+        var paragraphAlignments = matches
+            .Select(match => ExtractParagraphTextAlign(match.Groups["attributes"].Value))
+            .Where(align => !string.IsNullOrWhiteSpace(align))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var textAlign = paragraphAlignments.Count == 1 ? paragraphAlignments[0]!.ToLowerInvariant() : "left";
+
+        var compactHtml = new StringBuilder();
+        var currentIndex = 0;
+        for (var i = 0; i < matches.Count; i++)
+        {
+            var match = matches[i];
+            compactHtml.Append(template, currentIndex, match.Index - currentIndex);
+            compactHtml.Append(match.Groups["content"].Value.Trim());
+            if (i < matches.Count - 1)
+            {
+                compactHtml.Append("<br/>");
+            }
+
+            currentIndex = match.Index + match.Length;
+        }
+
+        compactHtml.Append(template, currentIndex, template.Length - currentIndex);
+        return new HtmlTemplateForPreview(compactHtml.ToString(), textAlign);
+    }
+
+    private static string? ExtractParagraphTextAlign(string attributes)
+    {
+        var match = CssTextAlignRegex.Match(attributes);
+        return match.Success ? match.Groups["align"].Value : null;
+    }
+
+    private sealed record HtmlTemplateForPreview(string Html, string CssTextAlign);
 
     private string ResolveTemplatePreviewValues(string template)
     {
