@@ -551,16 +551,15 @@ internal sealed class RdlBuilder
                 ToCentimeters(Math.Max(0.4d, height - 0.25d))));
         }
 
-        reportItems.Add(BuildPositionedTextbox(
+        reportItems.Add(BuildPositionedRichTextbox(
             "sp2rdlMemorandumText",
-            ResolveTemplateText(model.Memorandum.TextTemplate, model),
+            GetMemorandumParagraphs(model),
+            model,
             ToCentimeters(textLeft),
             "0cm",
             ToCentimeters(textWidth),
             ToCentimeters(Math.Max(0.4d, height - 0.15d)),
-            "Left",
-            model.BaseFontFamily,
-            "9pt"));
+            model.BaseFontFamily));
 
         if (model.Memorandum.ShowBottomLine)
         {
@@ -1600,15 +1599,27 @@ internal sealed class RdlBuilder
 
     private static string BuildFooterRightValue(PageFooterConfig footer)
     {
-        var pageNumberExpression = "\"Page \" & Globals!PageNumber & \" of \" & Globals!TotalPages";
         if (string.IsNullOrWhiteSpace(footer.RightText))
         {
-            return footer.ShowPageNumber ? "=" + pageNumberExpression : string.Empty;
+            return footer.ShowPageNumber ? "=\"Strana \" & Globals!PageNumber & \" od \" & Globals!TotalPages" : string.Empty;
         }
 
-        return footer.ShowPageNumber
-            ? "=" + QuoteExpressionText(footer.RightText.Trim() + "   ") + " & " + pageNumberExpression
-            : footer.RightText.Trim();
+        var template = footer.RightText.Trim();
+        if (template.Contains("{PageNo}", StringComparison.OrdinalIgnoreCase)
+            || template.Contains("{PageCount}", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildFooterTemplateExpression(template);
+        }
+
+        return template;
+    }
+
+    private static string BuildFooterTemplateExpression(string template)
+    {
+        var expression = QuoteExpressionText(template);
+        expression = expression.Replace("{PageNo}", "\" & Globals!PageNumber & \"", StringComparison.OrdinalIgnoreCase);
+        expression = expression.Replace("{PageCount}", "\" & Globals!TotalPages & \"", StringComparison.OrdinalIgnoreCase);
+        return "=" + expression;
     }
 
     private static string ResolveTemplateText(string template, ReportModel model)
@@ -1646,6 +1657,25 @@ internal sealed class RdlBuilder
         }
 
         return resolved;
+    }
+
+    private static List<RichTextParagraphConfig> GetMemorandumParagraphs(ReportModel model)
+    {
+        var paragraphs = model.Memorandum.RichTextParagraphs
+            .Where(paragraph => !string.IsNullOrWhiteSpace(paragraph.Text))
+            .ToList();
+        if (paragraphs.Count > 0)
+        {
+            return paragraphs;
+        }
+
+        return string.IsNullOrWhiteSpace(model.Memorandum.TextTemplate)
+            ? []
+            : model.Memorandum.TextTemplate
+                .Split(["\r\n", "\n"], StringSplitOptions.None)
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .Select(line => new RichTextParagraphConfig { Text = line.Trim() })
+                .ToList();
     }
 
     private static XElement BuildPositionedTextbox(
@@ -1706,6 +1736,66 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "PaddingRight", "3pt"),
                 new XElement(Rdl + "PaddingTop", "3pt"),
                 new XElement(Rdl + "PaddingBottom", "3pt")));
+
+    private static XElement BuildPositionedRichTextbox(
+        string name,
+        IReadOnlyList<RichTextParagraphConfig> paragraphs,
+        ReportModel model,
+        string left,
+        string top,
+        string width,
+        string height,
+        string fontFamily)
+        => new(Rdl + "Textbox",
+            new XAttribute("Name", name),
+            new XElement(Rdl + "CanGrow", "true"),
+            new XElement(Rdl + "KeepTogether", "true"),
+            new XElement(Rdl + "Paragraphs",
+                paragraphs.Count == 0
+                    ? [BuildRichParagraph(new RichTextParagraphConfig(), 0, model, fontFamily)]
+                    : paragraphs.Select((paragraph, index) => BuildRichParagraph(paragraph, index, model, fontFamily))),
+            new XElement(Rdl + "Top", top),
+            new XElement(Rdl + "Left", left),
+            new XElement(Rdl + "Height", height),
+            new XElement(Rdl + "Width", width),
+            new XElement(Rdl + "Style",
+                new XElement(Rdl + "Border",
+                    new XElement(Rdl + "Style", "None")),
+                new XElement(Rdl + "PaddingLeft", "3pt"),
+                new XElement(Rdl + "PaddingRight", "3pt"),
+                new XElement(Rdl + "PaddingTop", "3pt"),
+                new XElement(Rdl + "PaddingBottom", "3pt")));
+
+    private static XElement BuildRichParagraph(RichTextParagraphConfig paragraph, int index, ReportModel model, string fontFamily)
+    {
+        var text = ResolveTemplateText(paragraph.Text, model);
+        text = paragraph.ListStyle switch
+        {
+            "Bullet" => "- " + text,
+            "Number" => (index + 1).ToString(CultureInfo.InvariantCulture) + ". " + text,
+            _ => text
+        };
+
+        return new XElement(Rdl + "Paragraph",
+            new XElement(Rdl + "TextRuns",
+                new XElement(Rdl + "TextRun",
+                    new XElement(Rdl + "Value", text),
+                    new XElement(Rdl + "Style",
+                        new XElement(Rdl + "FontFamily", fontFamily),
+                        new XElement(Rdl + "FontSize", $"{Math.Max(1.0d, paragraph.FontSizeInPoints).ToString("0.#", CultureInfo.InvariantCulture)}pt"),
+                        paragraph.Bold ? new XElement(Rdl + "FontWeight", "Bold") : null,
+                        paragraph.Italic ? new XElement(Rdl + "FontStyle", "Italic") : null))),
+            new XElement(Rdl + "Style",
+                new XElement(Rdl + "TextAlign", NormalizeTextAlign(paragraph.TextAlign))));
+    }
+
+    private static string NormalizeTextAlign(string? value)
+        => value switch
+        {
+            "Center" => "Center",
+            "Right" => "Right",
+            _ => "Left"
+        };
 
     private static XElement BuildImage(
         string name,

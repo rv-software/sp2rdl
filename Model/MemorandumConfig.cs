@@ -18,6 +18,8 @@ internal sealed class MemorandumConfig
 
     public string TextTemplate { get; set; } = string.Empty;
 
+    public List<RichTextParagraphConfig> RichTextParagraphs { get; set; } = new();
+
     public bool ShowVerticalSeparator { get; set; } = true;
 
     public bool ShowBottomLine { get; set; } = true;

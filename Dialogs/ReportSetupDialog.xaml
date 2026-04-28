@@ -127,6 +127,18 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="10"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" Style="{StaticResource LabelText}"/>
@@ -439,6 +451,12 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="10"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Report title:" Style="{StaticResource LabelText}"/>
                     <TextBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtReportTitle" Style="{StaticResource FieldBox}"/>
@@ -482,7 +500,25 @@
                     <Button Grid.Row="16" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumSubreportButton_Click"/>
 
                     <TextBlock Grid.Row="18" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="18" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtMemorandumTemplate" Style="{StaticResource FieldBox}" Height="88" AcceptsReturn="True" TextWrapping="Wrap"/>
+                    <DataGrid Grid.Row="18" Grid.Column="1" Grid.ColumnSpan="3" x:Name="GridMemorandumParagraphs"
+                              Height="128"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="True"
+                              CanUserDeleteRows="True"
+                              Style="{StaticResource ReadableGrid}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Text" Binding="{Binding Text, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="*">
+                                <DataGridTextColumn.EditingElementStyle>
+                                    <Style TargetType="TextBox" BasedOn="{StaticResource ReadableGridTextBox}"/>
+                                </DataGridTextColumn.EditingElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridComboBoxColumn x:Name="ColMemorandumAlign" Header="Align" SelectedItemBinding="{Binding TextAlign, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="82"/>
+                            <DataGridCheckBoxColumn Header="B" Binding="{Binding Bold, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="42"/>
+                            <DataGridCheckBoxColumn Header="I" Binding="{Binding Italic, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="42"/>
+                            <DataGridTextColumn Header="Size" Binding="{Binding FontSizeInPoints, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="58"/>
+                            <DataGridComboBoxColumn x:Name="ColMemorandumListStyle" Header="List" SelectedItemBinding="{Binding ListStyle, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="78"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
 
                     <TextBlock Grid.Row="20" Grid.Column="0" Text="Logo:" Style="{StaticResource LabelText}"/>
                     <TextBox Grid.Row="20" Grid.Column="1" x:Name="TxtMemorandumLogo" Style="{StaticResource FieldBox}" Height="34"/>
