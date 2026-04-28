@@ -625,16 +625,14 @@ internal sealed class RdlBuilder
             reportItems.Add(BuildLine("sp2rdlReportSummaryTopLine", "0cm", "0cm", ToCentimeters(usableWidth), "0cm"));
         }
 
-        reportItems.Add(BuildPositionedTextbox(
+        reportItems.Add(BuildPositionedHtmlTextbox(
             "sp2rdlReportSummaryText",
             BuildTemplateExpression(model.ReportSummary.TextTemplate, model),
             "0cm",
             ToCentimeters(textTop),
             ToCentimeters(usableWidth),
             ToCentimeters(Math.Max(0.4d, height - textTop)),
-            "Left",
-            model.BaseFontFamily,
-            "9pt"));
+            model.BaseFontFamily));
 
         return BuildBandRectangle("sp2rdlReportSummary", reportItems, usableWidth, top, height);
     }

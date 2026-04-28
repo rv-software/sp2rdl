@@ -2,6 +2,8 @@ using System.Collections.ObjectModel;
 using System.Data.SqlClient;
 using System.Globalization;
 using System.IO;
+using System.Net;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -17,6 +19,8 @@ internal sealed record Choice<T>(T Value, string Label);
 #pragma warning disable CS0618 // Project decision: use System.Data.SqlClient for VSIX compatibility.
 public partial class ReportSetupDialog : Window
 {
+    private static readonly Regex TemplatePlaceholderRegex = new(@"\{(?<name>[A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
+
     private static readonly IReadOnlyList<string> SqlTypeNames =
     [
         "bit",
@@ -478,6 +482,7 @@ public partial class ReportSetupDialog : Window
 
     private void WrapMemorandumSelection(string before, string after)
     {
+        ChkMemorandumPreview.IsChecked = false;
         var selected = TxtMemorandumTemplate.SelectedText;
         TxtMemorandumTemplate.SelectedText = before + selected + after;
         TxtMemorandumTemplate.Focus();
@@ -485,9 +490,101 @@ public partial class ReportSetupDialog : Window
 
     private void InsertMemorandumText(string text)
     {
+        ChkMemorandumPreview.IsChecked = false;
         TxtMemorandumTemplate.SelectedText = text;
         TxtMemorandumTemplate.Focus();
     }
+
+    private void MemorandumPreviewCheckBox_Changed(object sender, RoutedEventArgs e)
+        => SetTemplatePreviewMode(TxtMemorandumTemplate, BrowserMemorandumPreview, ChkMemorandumPreview.IsChecked == true);
+
+    private void ReportSummaryPreviewCheckBox_Changed(object sender, RoutedEventArgs e)
+        => SetTemplatePreviewMode(TxtReportSummaryTemplate, BrowserReportSummaryPreview, ChkReportSummaryPreview.IsChecked == true);
+
+    private void TemplateTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!IsInitialized)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(sender, TxtMemorandumTemplate) && ChkMemorandumPreview.IsChecked == true)
+        {
+            UpdateTemplatePreview(TxtMemorandumTemplate, BrowserMemorandumPreview);
+        }
+        else if (ReferenceEquals(sender, TxtReportSummaryTemplate) && ChkReportSummaryPreview.IsChecked == true)
+        {
+            UpdateTemplatePreview(TxtReportSummaryTemplate, BrowserReportSummaryPreview);
+        }
+    }
+
+    private void SetTemplatePreviewMode(TextBox editor, WebBrowser preview, bool enabled)
+    {
+        if (enabled)
+        {
+            UpdateTemplatePreview(editor, preview);
+            editor.Visibility = Visibility.Collapsed;
+            preview.Visibility = Visibility.Visible;
+            return;
+        }
+
+        preview.Visibility = Visibility.Collapsed;
+        editor.Visibility = Visibility.Visible;
+        editor.Focus();
+    }
+
+    private void UpdateTemplatePreview(TextBox editor, WebBrowser preview)
+    {
+        CommitPendingGridEdits();
+
+        var body = ResolveTemplatePreviewValues(editor.Text);
+        body = body.Replace("\r\n", "<br/>", StringComparison.Ordinal)
+            .Replace("\n", "<br/>", StringComparison.Ordinal);
+
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            body = "&nbsp;";
+        }
+
+        var html = "<!doctype html><html><head><meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\" />"
+            + "<style>"
+            + "body{margin:8px;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff;}"
+            + "p{margin:0 0 6px 0;}ul,ol{margin-top:0;margin-bottom:6px;padding-left:22px;}"
+            + "</style></head><body>"
+            + body
+            + "</body></html>";
+
+        preview.NavigateToString(html);
+    }
+
+    private string ResolveTemplatePreviewValues(string template)
+    {
+        var values = BuildTemplatePreviewValues();
+        return TemplatePlaceholderRegex.Replace(template, match =>
+        {
+            var name = match.Groups["name"].Value;
+            return values.TryGetValue(name, out var value)
+                ? WebUtility.HtmlEncode(value ?? string.Empty)
+                : match.Value;
+        });
+    }
+
+    private Dictionary<string, string?> BuildTemplatePreviewValues()
+    {
+        var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var variable in this.reportVariables.Where(variable => variable.Enabled && !string.IsNullOrWhiteSpace(variable.Name)))
+        {
+            values[variable.Name.Trim()] = FirstNonBlank(variable.StaticValue, variable.FallbackValue);
+        }
+
+        values["CompanyName"] = FirstNonBlank(values.TryGetValue("CompanyName", out var companyValue) ? companyValue : null, TxtCompanyName.Text.Trim());
+        values["ReportTitle"] = string.IsNullOrWhiteSpace(TxtReportTitle.Text) ? TxtReportName.Text.Trim() : TxtReportTitle.Text.Trim();
+
+        return values;
+    }
+
+    private static string? FirstNonBlank(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 
     private void TemplateTextBox_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
