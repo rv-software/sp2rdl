@@ -14,8 +14,10 @@ internal sealed class RdlBuilder
     private static readonly XNamespace Rd = "http://schemas.microsoft.com/SQLServer/reporting/reportdesigner";
     private const string ReportLineColor = "#A6A6A6";
     private const string ReportLineWidth = "0.5pt";
+    private const string GroupSpacerHeight = "0.14cm";
     private const string TablixFontFamily = "Arial Narrow";
     private const string HeaderBackgroundColor = "#EDEDED";
+    private const string GrandTotalBackgroundColor = "#CFCFCF";
 
     public XDocument Build(ReportModel model)
     {
@@ -269,8 +271,8 @@ internal sealed class RdlBuilder
             new XElement(Rdl + "ParameterValues",
                 parameter.StaticValidValues.Select(value =>
                     new XElement(Rdl + "ParameterValue",
-                        new XElement(Rdl + "Value", value),
-                        new XElement(Rdl + "Label", value)))));
+                        new XElement(Rdl + "Value", value.Value),
+                        new XElement(Rdl + "Label", string.IsNullOrWhiteSpace(value.Label) ? value.Value : value.Label)))));
     }
 
     private static XElement BuildReportParametersLayout(ReportModel model)
@@ -406,6 +408,13 @@ internal sealed class RdlBuilder
             currentTop += GetParameterSummaryHeight(model);
         }
 
+        var validationWarnings = BuildValidationWarningPanel(model, usableWidth, currentTop);
+        if (validationWarnings is not null)
+        {
+            reportItems.Add(validationWarnings);
+            currentTop += GetValidationWarningHeight(model);
+        }
+
         var dataset = model.Datasets.FirstOrDefault(dataset => dataset.Name == model.MainDatasetName)
             ?? model.Datasets.FirstOrDefault();
         if (dataset is null || dataset.Fields.Count == 0)
@@ -435,35 +444,535 @@ internal sealed class RdlBuilder
             .OrderBy(field => field.OrdinalPosition <= 0 ? int.MaxValue : field.OrdinalPosition)
             .ThenBy(field => field.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var columnWidth = usableWidth / Math.Max(fields.Count, 1);
+        var groups = GetTablixGroups(fields);
+        var detailFields = fields
+            .Where(field => field.IncludeInReport && field.GroupLevel <= 0)
+            .ToList();
+        if (detailFields.Count == 0)
+        {
+            detailFields = fields
+                .Where(field => field.IncludeInReport)
+                .ToList();
+        }
+
+        if (detailFields.Count == 0)
+        {
+            detailFields = fields
+                .Where(field => field.GroupLevel <= 0)
+                .Take(1)
+                .ToList();
+        }
+
+        if (detailFields.Count == 0)
+        {
+            detailFields = fields.Take(1).ToList();
+        }
+
+        var aggregateFields = detailFields
+            .Where(field => !string.IsNullOrWhiteSpace(field.AggregateFunction))
+            .ToList();
+        var columnWidths = CalculateTablixColumnWidths(detailFields, usableWidth);
+        var tablixRows = new List<XElement>
+        {
+            BuildTablixRow(detailFields, "Header", "0.65cm", field => field.Name, true)
+        };
+
+        foreach (var group in groups)
+        {
+            tablixRows.Add(BuildSpacerRow(detailFields, $"Group{group.Level}HeaderSpacer"));
+            tablixRows.Add(BuildGroupHeaderRow(detailFields, group));
+        }
+
+        tablixRows.Add(BuildTablixRow(detailFields, "Detail", "0.6cm", field => $"=Fields!{field.Name}.Value", false));
+
+        foreach (var group in groups.AsEnumerable().Reverse())
+        {
+            var style = GetGroupVisualStyle(group.Level);
+            tablixRows.Add(BuildAggregateRow(detailFields, aggregateFields, $"sp2rdlGroup{group.Level}", BuildGroupSubtotalLabel(group), style.BackgroundColor, style.FontStyle));
+        }
+
+        if (aggregateFields.Count > 0)
+        {
+            tablixRows.Add(BuildAggregateRow(detailFields, aggregateFields, null, "Ukupno", GrandTotalBackgroundColor, fontStyle: null));
+        }
 
         return new XElement(Rdl + "Tablix",
             new XAttribute("Name", "TablixMain"),
             new XElement(Rdl + "TablixBody",
                 new XElement(Rdl + "TablixColumns",
-                    fields.Select(_ => new XElement(Rdl + "TablixColumn",
-                        new XElement(Rdl + "Width", ToCentimeters(columnWidth))))),
-                new XElement(Rdl + "TablixRows",
-                    BuildTablixRow(fields, "Header", "0.65cm", field => field.Name, true),
-                    BuildTablixRow(fields, "Detail", "0.6cm", field => $"=Fields!{field.Name}.Value", false))),
+                    columnWidths.Select(width => new XElement(Rdl + "TablixColumn",
+                        new XElement(Rdl + "Width", ToCentimeters(width))))),
+                new XElement(Rdl + "TablixRows", tablixRows)),
             new XElement(Rdl + "TablixColumnHierarchy",
-                new XElement(Rdl + "TablixMembers", fields.Select(_ => new XElement(Rdl + "TablixMember")))),
-            new XElement(Rdl + "TablixRowHierarchy",
-                new XElement(Rdl + "TablixMembers",
-                    new XElement(Rdl + "TablixMember",
-                        new XElement(Rdl + "KeepWithGroup", "After"),
-                        new XElement(Rdl + "RepeatOnNewPage", "true")),
-                    new XElement(Rdl + "TablixMember",
-                        new XElement(Rdl + "Group", new XAttribute("Name", "Details"))))),
+                new XElement(Rdl + "TablixMembers", detailFields.Select(_ => new XElement(Rdl + "TablixMember")))),
+            BuildTablixRowHierarchy(groups, dataset.Name, aggregateFields.Count > 0),
             new XElement(Rdl + "DataSetName", dataset.Name),
             new XElement(Rdl + "Top", ToCentimeters(top)),
             new XElement(Rdl + "Left", "0cm"),
-            new XElement(Rdl + "Height", "1.25cm"),
+            new XElement(Rdl + "Height", ToCentimeters(Math.Max(1.25d, tablixRows.Count * 0.6d))),
             new XElement(Rdl + "Width", ToCentimeters(usableWidth)),
             new XElement(Rdl + "Style",
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "None"))));
     }
+
+    private sealed record TablixGroup(int Level, IReadOnlyList<DatasetField> Fields);
+
+    private sealed record GroupVisualStyle(string BackgroundColor, string? FontStyle);
+
+    private static List<TablixGroup> GetTablixGroups(IReadOnlyList<DatasetField> fields)
+        => fields
+            .Where(field => field.GroupLevel is >= 1 and <= 4)
+            .GroupBy(field => field.GroupLevel)
+            .OrderBy(group => group.Key)
+            .Select(group => new TablixGroup(
+                group.Key,
+                group
+                    .OrderBy(field => field.OrdinalPosition <= 0 ? int.MaxValue : field.OrdinalPosition)
+                    .ThenBy(field => field.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList()))
+            .ToList();
+
+    private static XElement BuildGroupHeaderRow(IReadOnlyList<DatasetField> columns, TablixGroup group)
+    {
+        var style = GetGroupVisualStyle(group.Level);
+        var cellContents = new XElement(Rdl + "CellContents",
+            BuildCellTextbox(
+                $"sp2rdlGroup{group.Level}Header1",
+                BuildGroupHeaderExpression(group),
+                isHeader: true,
+                format: null,
+                textAlign: "Left",
+                backgroundColor: style.BackgroundColor,
+                fontWeight: "Bold",
+                fontStyle: style.FontStyle,
+                horizontalOnlyBorders: true,
+                textAlignOverride: "Left"));
+
+        if (columns.Count > 1)
+        {
+            cellContents.Add(new XElement(Rdl + "ColSpan", columns.Count.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        var cells = new List<XElement>
+        {
+            new(Rdl + "TablixCell", cellContents)
+        };
+
+        for (var index = 1; index < columns.Count; index++)
+        {
+            cells.Add(new XElement(Rdl + "TablixCell"));
+        }
+
+        return new XElement(Rdl + "TablixRow",
+            new XElement(Rdl + "Height", "0.6cm"),
+            new XElement(Rdl + "TablixCells", cells));
+    }
+
+    private static string BuildGroupHeaderExpression(TablixGroup group)
+        => "=" + string.Join(" & \"   \" & ", group.Fields.Select(field =>
+            QuoteExpressionText(field.Name + ": ") + " & CStr(Fields!" + field.Name + ".Value)"));
+
+    private static string BuildGroupSubtotalLabel(TablixGroup group)
+        => "Podzbir: " + string.Join(", ", group.Fields.Select(field => field.Name));
+
+    private static XElement BuildAggregateRow(
+        IReadOnlyList<DatasetField> columns,
+        IReadOnlyList<DatasetField> aggregateFields,
+        string? scopeName,
+        string label,
+        string backgroundColor,
+        string? fontStyle)
+    {
+        var rowName = MakeRdlName(label);
+        var aggregateFieldNames = aggregateFields
+            .Select(field => field.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var firstAggregateIndex = columns
+            .Select((field, index) => new { Field = field, Index = index })
+            .Where(item => aggregateFieldNames.Contains(item.Field.Name))
+            .Select(item => (int?)item.Index)
+            .FirstOrDefault();
+        var labelSpan = firstAggregateIndex is null or <= 0 ? 1 : firstAggregateIndex.Value;
+        if (aggregateFieldNames.Count == 0)
+        {
+            labelSpan = columns.Count;
+        }
+
+        var cells = new List<XElement>();
+        var index = 0;
+        while (index < columns.Count)
+        {
+            var field = columns[index];
+            var hasAggregate = aggregateFieldNames.Contains(field.Name);
+            if (index == 0 && !hasAggregate)
+            {
+                var cellContents = new XElement(Rdl + "CellContents",
+                    BuildCellTextbox(
+                        $"sp2rdl{rowName}{index + 1}",
+                        label,
+                        isHeader: false,
+                        format: null,
+                        textAlign: "Left",
+                        backgroundColor: backgroundColor,
+                        fontWeight: "Bold",
+                        fontStyle: fontStyle));
+                if (labelSpan > 1)
+                {
+                    cellContents.Add(new XElement(Rdl + "ColSpan", labelSpan.ToString(CultureInfo.InvariantCulture)));
+                }
+
+                cells.Add(new XElement(Rdl + "TablixCell", cellContents));
+                for (var placeholderIndex = 1; placeholderIndex < labelSpan; placeholderIndex++)
+                {
+                    cells.Add(new XElement(Rdl + "TablixCell"));
+                }
+
+                index = labelSpan;
+                continue;
+            }
+
+            cells.Add(new XElement(Rdl + "TablixCell",
+                new XElement(Rdl + "CellContents",
+                    BuildCellTextbox(
+                        $"sp2rdl{rowName}{index + 1}",
+                        hasAggregate ? BuildAggregateExpression(field, scopeName) : string.Empty,
+                        isHeader: false,
+                        field.Format,
+                        GetFieldTextAlign(field),
+                        backgroundColor,
+                        "Bold",
+                        fontStyle))));
+            index++;
+        }
+
+        return new XElement(Rdl + "TablixRow",
+            new XElement(Rdl + "Height", "0.6cm"),
+            new XElement(Rdl + "TablixCells", cells));
+    }
+
+    private static XElement BuildSpacerRow(IReadOnlyList<DatasetField> columns, string rowName)
+        => BuildCustomTablixRow(
+            columns,
+            rowName,
+            GroupSpacerHeight,
+            (_, _) => string.Empty,
+            isHeader: false,
+            backgroundColor: null,
+            fontWeight: null,
+            noBorders: true);
+
+    private static string BuildAggregateExpression(DatasetField field, string? scopeName)
+    {
+        var scope = string.IsNullOrWhiteSpace(scopeName) ? string.Empty : ", " + QuoteExpressionText(scopeName);
+        return field.AggregateFunction switch
+        {
+            "Sum" => $"=Sum(Fields!{field.Name}.Value{scope})",
+            "Avg" => $"=Avg(Fields!{field.Name}.Value{scope})",
+            "Min" => $"=Min(Fields!{field.Name}.Value{scope})",
+            "Max" => $"=Max(Fields!{field.Name}.Value{scope})",
+            "Count" => $"=Count(Fields!{field.Name}.Value{scope})",
+            "CountDistinct" => $"=CountDistinct(Fields!{field.Name}.Value{scope})",
+            _ => string.Empty
+        };
+    }
+
+    private static GroupVisualStyle GetGroupVisualStyle(int level)
+        => level switch
+        {
+            1 => new("#D4D4D4", null),
+            2 => new("#DEDEDE", "Italic"),
+            3 => new("#E8E8E8", null),
+            4 => new("#F2F2F2", "Italic"),
+            _ => new("#F2F2F2", null)
+        };
+
+    private static IReadOnlyList<double> CalculateTablixColumnWidths(IReadOnlyList<DatasetField> fields, double usableWidth)
+    {
+        if (fields.Count == 0)
+        {
+            return [];
+        }
+
+        var desiredWidths = fields.Select(GetDesiredColumnWidth).ToList();
+        var minimumWidths = fields.Select(GetMinimumColumnWidth).ToList();
+        var maximumWidths = fields.Select(GetMaximumColumnWidth).ToList();
+        var totalDesired = desiredWidths.Sum();
+
+        if (totalDesired <= usableWidth)
+        {
+            var extraWidth = usableWidth - totalDesired;
+            var flexibleIndexes = fields
+                .Select((field, index) => new { Field = field, Index = index })
+                .Where(item => IsLongTextField(item.Field))
+                .Select(item => item.Index)
+                .DefaultIfEmpty()
+                .ToList();
+
+            if (flexibleIndexes.Count == 1 && flexibleIndexes[0] == 0 && !IsLongTextField(fields[0]))
+            {
+                flexibleIndexes = Enumerable.Range(0, fields.Count).ToList();
+            }
+
+            DistributeExtraWidth(desiredWidths, maximumWidths, flexibleIndexes, extraWidth);
+            DistributeExtraWidth(desiredWidths, maximumWidths, Enumerable.Range(0, fields.Count), usableWidth - desiredWidths.Sum());
+            FillRemainingWidth(desiredWidths, fields, usableWidth);
+            return desiredWidths;
+        }
+
+        var minimumTotal = minimumWidths.Sum();
+        if (minimumTotal >= usableWidth)
+        {
+            var scale = usableWidth / minimumTotal;
+            return minimumWidths.Select(width => Math.Max(0.5d, width * scale)).ToList();
+        }
+
+        var shrinkableTotal = desiredWidths.Zip(minimumWidths, (desired, minimum) => desired - minimum).Sum();
+        var shrinkBy = totalDesired - usableWidth;
+        if (shrinkableTotal <= 0)
+        {
+            return minimumWidths;
+        }
+
+        return desiredWidths
+            .Zip(minimumWidths, (desired, minimum) => desired - ((desired - minimum) / shrinkableTotal * shrinkBy))
+            .ToList();
+    }
+
+    private static void DistributeExtraWidth(IList<double> widths, IReadOnlyList<double> maximumWidths, IEnumerable<int> indexes, double extraWidth)
+    {
+        var availableIndexes = indexes.Distinct().Where(index => index >= 0 && index < widths.Count).ToList();
+        while (extraWidth > 0.001d && availableIndexes.Count > 0)
+        {
+            var perColumn = extraWidth / availableIndexes.Count;
+            var usedWidth = 0.0d;
+            foreach (var index in availableIndexes.ToList())
+            {
+                var capacity = maximumWidths[index] - widths[index];
+                var increment = Math.Min(capacity, perColumn);
+                if (increment <= 0)
+                {
+                    availableIndexes.Remove(index);
+                    continue;
+                }
+
+                widths[index] += increment;
+                usedWidth += increment;
+            }
+
+            if (usedWidth <= 0)
+            {
+                break;
+            }
+
+            extraWidth -= usedWidth;
+        }
+    }
+
+    private static void FillRemainingWidth(IList<double> widths, IReadOnlyList<DatasetField> fields, double usableWidth)
+    {
+        var remainingWidth = usableWidth - widths.Sum();
+        if (remainingWidth <= 0.001d || widths.Count == 0)
+        {
+            return;
+        }
+
+        var targetIndex = FindBestFillColumnIndex(fields);
+        widths[targetIndex] += remainingWidth;
+    }
+
+    private static int FindBestFillColumnIndex(IReadOnlyList<DatasetField> fields)
+    {
+        var longTextIndex = fields
+            .Select((field, index) => new { Field = field, Index = index })
+            .Where(item => IsLongTextField(item.Field))
+            .OrderByDescending(item => TryGetSqlTypeLength(item.Field.SqlTypeName) ?? int.MaxValue)
+            .ThenBy(item => item.Index)
+            .Select(item => (int?)item.Index)
+            .FirstOrDefault();
+        if (longTextIndex.HasValue)
+        {
+            return longTextIndex.Value;
+        }
+
+        var textIndex = fields
+            .Select((field, index) => new { Field = field, Index = index })
+            .Where(item => IsTextSqlType(NormalizeSqlType(item.Field.SqlTypeName)))
+            .OrderByDescending(item => TryGetSqlTypeLength(item.Field.SqlTypeName) ?? 0)
+            .ThenBy(item => item.Index)
+            .Select(item => (int?)item.Index)
+            .FirstOrDefault();
+        return textIndex ?? Math.Max(0, fields.Count - 1);
+    }
+
+    private static double GetDesiredColumnWidth(DatasetField field)
+    {
+        var normalized = NormalizeSqlType(field.SqlTypeName);
+        if (IsNumericSqlType(normalized))
+        {
+            return normalized is "tinyint" or "smallint" or "int" ? 1.6d : 2.1d;
+        }
+
+        if (IsDateSqlType(normalized))
+        {
+            return normalized == "time" ? 1.7d : 2.2d;
+        }
+
+        if (normalized == "bit")
+        {
+            return 1.2d;
+        }
+
+        var length = TryGetSqlTypeLength(field.SqlTypeName);
+        if (IsTextSqlType(normalized) && length is > 0 and <= 20)
+        {
+            return Math.Clamp(1.4d + length.Value * 0.07d, 1.8d, 3.0d);
+        }
+
+        return IsLongTextField(field) ? 4.0d : 2.4d;
+    }
+
+    private static double GetMinimumColumnWidth(DatasetField field)
+    {
+        var normalized = NormalizeSqlType(field.SqlTypeName);
+        if (IsNumericSqlType(normalized))
+        {
+            return 1.3d;
+        }
+
+        if (IsDateSqlType(normalized))
+        {
+            return 1.7d;
+        }
+
+        return IsLongTextField(field) ? 2.2d : 1.5d;
+    }
+
+    private static double GetMaximumColumnWidth(DatasetField field)
+    {
+        var normalized = NormalizeSqlType(field.SqlTypeName);
+        if (IsNumericSqlType(normalized) || IsDateSqlType(normalized) || normalized == "bit")
+        {
+            return GetDesiredColumnWidth(field) + 0.4d;
+        }
+
+        return IsLongTextField(field) ? 6.0d : 3.4d;
+    }
+
+    private static bool IsLongTextField(DatasetField field)
+    {
+        var normalized = NormalizeSqlType(field.SqlTypeName);
+        if (!IsTextSqlType(normalized))
+        {
+            return false;
+        }
+
+        var length = TryGetSqlTypeLength(field.SqlTypeName);
+        return length is null or > 20;
+    }
+
+    private static bool IsNumericSqlType(string normalizedSqlType)
+        => normalizedSqlType is "tinyint" or "smallint" or "int" or "bigint" or "decimal" or "numeric" or "money" or "smallmoney" or "float" or "real";
+
+    private static bool IsDateSqlType(string normalizedSqlType)
+        => normalizedSqlType is "date" or "datetime" or "datetime2" or "smalldatetime" or "datetimeoffset" or "time";
+
+    private static bool IsTextSqlType(string normalizedSqlType)
+        => normalizedSqlType is "char" or "varchar" or "nchar" or "nvarchar" or "text" or "ntext";
+
+    private static int? TryGetSqlTypeLength(string sqlTypeName)
+    {
+        var openParen = sqlTypeName.IndexOf('(');
+        var closeParen = sqlTypeName.IndexOf(')');
+        if (openParen < 0 || closeParen <= openParen)
+        {
+            return null;
+        }
+
+        var lengthText = sqlTypeName[(openParen + 1)..closeParen].Split(',', 2)[0].Trim();
+        if (lengthText.Equals("max", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return int.TryParse(lengthText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var length)
+            ? length
+            : null;
+    }
+
+    private static XElement BuildTablixRowHierarchy(IReadOnlyList<TablixGroup> groups, string datasetName, bool includeGrandTotal)
+    {
+        var members = new List<XElement>
+        {
+            new(Rdl + "TablixMember",
+                new XElement(Rdl + "KeepWithGroup", "After"),
+                new XElement(Rdl + "RepeatOnNewPage", "true"))
+        };
+
+        members.Add(groups.Count == 0
+            ? BuildDetailsMember()
+            : BuildGroupMember(groups, 0));
+
+        if (includeGrandTotal)
+        {
+            members.Add(new XElement(Rdl + "TablixMember"));
+        }
+
+        return new XElement(Rdl + "TablixRowHierarchy",
+            new XElement(Rdl + "TablixMembers", members));
+    }
+
+    private static XElement BuildGroupMember(IReadOnlyList<TablixGroup> groups, int index)
+    {
+        var group = groups[index];
+        var groupScopeName = $"sp2rdlGroup{group.Level}";
+        var childMembers = new List<XElement>
+        {
+            BuildSpacerMember(group, groups.Take(index).ToList())
+        };
+
+        childMembers.Add(new XElement(Rdl + "TablixMember"));
+
+        childMembers.Add(index + 1 < groups.Count
+            ? BuildGroupMember(groups, index + 1)
+            : BuildDetailsMember());
+        childMembers.Add(new XElement(Rdl + "TablixMember"));
+
+        return new XElement(Rdl + "TablixMember",
+            new XElement(Rdl + "Group",
+                new XAttribute("Name", groupScopeName),
+                new XElement(Rdl + "GroupExpressions",
+                    group.Fields.Select(field =>
+                        new XElement(Rdl + "GroupExpression", $"=Fields!{field.Name}.Value")))),
+            new XElement(Rdl + "SortExpressions",
+                group.Fields.Select(field =>
+                    new XElement(Rdl + "SortExpression",
+                        new XElement(Rdl + "Value", $"=Fields!{field.Name}.Value")))),
+            new XElement(Rdl + "TablixMembers", childMembers));
+    }
+
+    private static XElement BuildSpacerMember(TablixGroup group, IReadOnlyList<TablixGroup> parentGroups)
+        => new(Rdl + "TablixMember",
+            new XElement(Rdl + "Visibility",
+                new XElement(Rdl + "Hidden", BuildFirstGroupInstanceHiddenExpression(group, parentGroups))));
+
+    private static string BuildFirstGroupInstanceHiddenExpression(TablixGroup group, IReadOnlyList<TablixGroup> parentGroups)
+    {
+        var currentGroupField = group.Fields.First();
+        var conditions = new List<string>
+        {
+            $"IsNothing(Previous(Fields!{currentGroupField.Name}.Value))"
+        };
+
+        conditions.AddRange(parentGroups.SelectMany(parentGroup => parentGroup.Fields).Select(field =>
+            $"CStr(Fields!{field.Name}.Value) <> CStr(Previous(Fields!{field.Name}.Value))"));
+
+        return "=IIF(" + string.Join(" OR ", conditions) + ", True, False)";
+    }
+
+    private static XElement BuildDetailsMember()
+        => new(Rdl + "TablixMember",
+            new XElement(Rdl + "Group", new XAttribute("Name", "Details")));
 
     private static XElement? BuildParameterSummaryPanel(ReportModel model, double usableWidth, double top)
     {
@@ -500,6 +1009,83 @@ internal sealed class RdlBuilder
         return count == 0 ? 0.0d : Math.Max(0.9d, 0.35d + count * 0.32d);
     }
 
+    private static XElement? BuildValidationWarningPanel(ReportModel model, double usableWidth, double top)
+    {
+        var rules = GetComparisonRules(model);
+        if (rules.Count == 0)
+        {
+            return null;
+        }
+
+        var reportItems = new XElement(Rdl + "ReportItems");
+        var lineHeight = 0.45d;
+        for (var index = 0; index < rules.Count; index++)
+        {
+            var parameter = rules[index];
+            reportItems.Add(BuildPositionedTextbox(
+                $"sp2rdlValidationWarning{index + 1}",
+                BuildValidationWarningText(parameter),
+                "0cm",
+                ToCentimeters(index * lineHeight),
+                ToCentimeters(usableWidth),
+                ToCentimeters(lineHeight),
+                "Left",
+                model.BaseFontFamily,
+                "8pt",
+                hiddenExpression: BuildValidationHiddenExpression(parameter),
+                borderStyle: "Solid",
+                backgroundColor: "#FFF4CE",
+                fontColor: "#7A2E0E"));
+        }
+
+        return new XElement(Rdl + "Rectangle",
+            new XAttribute("Name", "sp2rdlValidationWarnings"),
+            reportItems,
+            new XElement(Rdl + "KeepTogether", "true"),
+            new XElement(Rdl + "Top", ToCentimeters(top + 0.1d)),
+            new XElement(Rdl + "Left", "0cm"),
+            new XElement(Rdl + "Height", ToCentimeters(GetValidationWarningHeight(model) - 0.2d)),
+            new XElement(Rdl + "Width", ToCentimeters(usableWidth)),
+            new XElement(Rdl + "Style",
+                new XElement(Rdl + "Border",
+                    new XElement(Rdl + "Style", "None"))));
+    }
+
+    private static List<ReportParameter> GetComparisonRules(ReportModel model)
+        => model.Parameters
+            .Where(parameter => !parameter.Hidden
+                && !parameter.MultiValue
+                && !string.IsNullOrWhiteSpace(parameter.CompareToParameterName)
+                && !string.IsNullOrWhiteSpace(parameter.CompareOperator))
+            .OrderBy(parameter => parameter.OrdinalNumber <= 0 ? int.MaxValue : parameter.OrdinalNumber)
+            .ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static double GetValidationWarningHeight(ReportModel model)
+    {
+        var count = GetComparisonRules(model).Count;
+        return count == 0 ? 0.0d : 0.2d + count * 0.45d;
+    }
+
+    private static string BuildValidationWarningText(ReportParameter parameter)
+        => "=\"Upozorenje: "
+            + EscapeExpressionText(GetParameterCaption(parameter))
+            + " mora biti "
+            + EscapeExpressionText(parameter.CompareOperator ?? string.Empty)
+            + " "
+            + EscapeExpressionText(parameter.CompareToParameterName ?? string.Empty)
+            + ".\"";
+
+    private static string BuildValidationHiddenExpression(ReportParameter parameter)
+    {
+        var parameterValue = $"Parameters!{parameter.Name}.Value";
+        var compareValue = $"Parameters!{parameter.CompareToParameterName}.Value";
+        return $"=IIF(IsNothing({parameterValue}) OR IsNothing({compareValue}), True, {parameterValue} {parameter.CompareOperator} {compareValue})";
+    }
+
+    private static string GetParameterCaption(ReportParameter parameter)
+        => string.IsNullOrWhiteSpace(parameter.Prompt) ? parameter.Name : parameter.Prompt;
+
     private static string BuildParameterSummaryExpression(IReadOnlyList<ReportParameter> parameters)
         => "=" + string.Join(" & vbCrLf & ", parameters.Select(BuildParameterSummaryLineExpression));
 
@@ -535,6 +1121,26 @@ internal sealed class RdlBuilder
         string height,
         Func<DatasetField, string> valueFactory,
         bool isHeader)
+        => BuildCustomTablixRow(
+            fields,
+            rowName,
+            height,
+            (field, _) => valueFactory(field),
+            isHeader,
+            isHeader ? HeaderBackgroundColor : null,
+            isHeader ? "Bold" : null);
+
+    private static XElement BuildCustomTablixRow(
+        IReadOnlyList<DatasetField> fields,
+        string rowName,
+        string height,
+        Func<DatasetField, int, string> valueFactory,
+        bool isHeader,
+        string? backgroundColor,
+        string? fontWeight,
+        string? fontStyle = null,
+        bool horizontalOnlyBorders = false,
+        bool noBorders = false)
         => new(Rdl + "TablixRow",
             new XElement(Rdl + "Height", height),
             new XElement(Rdl + "TablixCells",
@@ -542,24 +1148,40 @@ internal sealed class RdlBuilder
                     new XElement(Rdl + "CellContents",
                         BuildCellTextbox(
                             $"sp2rdl{rowName}{index + 1}",
-                            valueFactory(field),
+                            valueFactory(field, index),
                             isHeader,
                             field.Format,
-                            GetFieldTextAlign(field)))))));
+                            GetFieldTextAlign(field),
+                            backgroundColor,
+                            fontWeight,
+                            fontStyle,
+                            horizontalOnlyBorders,
+                            noBorders))))));
 
     private static XElement BuildCellTextbox(
         string name,
         string value,
         bool isHeader,
         string? format,
-        string textAlign)
+        string textAlign,
+        string? backgroundColor = null,
+        string? fontWeight = null,
+        string? fontStyle = null,
+        bool horizontalOnlyBorders = false,
+        bool noBorders = false,
+        string? textAlignOverride = null)
     {
         var textRunStyle = new XElement(Rdl + "Style",
             new XElement(Rdl + "FontFamily", TablixFontFamily),
             new XElement(Rdl + "FontSize", "9pt"));
-        if (isHeader)
+        if (isHeader || !string.IsNullOrWhiteSpace(fontWeight))
         {
-            textRunStyle.Add(new XElement(Rdl + "FontWeight", "Bold"));
+            textRunStyle.Add(new XElement(Rdl + "FontWeight", string.IsNullOrWhiteSpace(fontWeight) ? "Bold" : fontWeight));
+        }
+
+        if (!string.IsNullOrWhiteSpace(fontStyle))
+        {
+            textRunStyle.Add(new XElement(Rdl + "FontStyle", fontStyle));
         }
 
         if (!isHeader && !string.IsNullOrWhiteSpace(format))
@@ -578,19 +1200,61 @@ internal sealed class RdlBuilder
                             new XElement(Rdl + "Value", value),
                             textRunStyle)),
                     new XElement(Rdl + "Style",
-                        new XElement(Rdl + "TextAlign", isHeader ? "Center" : textAlign)))),
+                        new XElement(Rdl + "TextAlign", textAlignOverride ?? (isHeader ? "Center" : textAlign))))),
             new XElement(Rdl + "Style",
-                new XElement(Rdl + "Border",
-                    new XElement(Rdl + "Style", "Solid"),
-                    new XElement(Rdl + "Color", ReportLineColor),
-                    new XElement(Rdl + "Width", ReportLineWidth)),
-                isHeader
-                    ? new XElement(Rdl + "BackgroundColor", HeaderBackgroundColor)
-                    : null,
+                BuildCellBorders(horizontalOnlyBorders, noBorders),
+                string.IsNullOrWhiteSpace(backgroundColor)
+                    ? null
+                    : new XElement(Rdl + "BackgroundColor", backgroundColor),
                 new XElement(Rdl + "PaddingLeft", "2pt"),
                 new XElement(Rdl + "PaddingRight", "2pt"),
                 new XElement(Rdl + "PaddingTop", "2pt"),
                 new XElement(Rdl + "PaddingBottom", "2pt")));
+    }
+
+    private static object[] BuildCellBorders(bool horizontalOnlyBorders, bool noBorders)
+    {
+        if (noBorders)
+        {
+            return
+            [
+                new XElement(Rdl + "Border",
+                    new XElement(Rdl + "Style", "None"))
+            ];
+        }
+
+        if (!horizontalOnlyBorders)
+        {
+            return
+            [
+                new XElement(Rdl + "Border",
+                    new XElement(Rdl + "Style", "Solid"),
+                    new XElement(Rdl + "Color", ReportLineColor),
+                    new XElement(Rdl + "Width", ReportLineWidth))
+            ];
+        }
+
+        return
+        [
+            new XElement(Rdl + "Border",
+                new XElement(Rdl + "Style", "None")),
+            new XElement(Rdl + "TopBorder",
+                new XElement(Rdl + "Style", "Solid"),
+                new XElement(Rdl + "Color", ReportLineColor),
+                new XElement(Rdl + "Width", ReportLineWidth)),
+            new XElement(Rdl + "BottomBorder",
+                new XElement(Rdl + "Style", "Solid"),
+                new XElement(Rdl + "Color", ReportLineColor),
+                new XElement(Rdl + "Width", ReportLineWidth)),
+            new XElement(Rdl + "LeftBorder",
+                new XElement(Rdl + "Style", "Solid"),
+                new XElement(Rdl + "Color", ReportLineColor),
+                new XElement(Rdl + "Width", ReportLineWidth)),
+            new XElement(Rdl + "RightBorder",
+                new XElement(Rdl + "Style", "Solid"),
+                new XElement(Rdl + "Color", ReportLineColor),
+                new XElement(Rdl + "Width", ReportLineWidth))
+        ];
     }
 
     private static string GetFieldTextAlign(DatasetField field)
@@ -709,7 +1373,8 @@ internal sealed class RdlBuilder
         string? fontWeight = null,
         string? hiddenExpression = null,
         string borderStyle = "None",
-        string? backgroundColor = null)
+        string? backgroundColor = null,
+        string? fontColor = null)
         => new(Rdl + "Textbox",
             new XAttribute("Name", name),
             new XElement(Rdl + "CanGrow", "true"),
@@ -722,6 +1387,9 @@ internal sealed class RdlBuilder
                             new XElement(Rdl + "Style",
                                 new XElement(Rdl + "FontFamily", fontFamily),
                                 new XElement(Rdl + "FontSize", fontSize),
+                                string.IsNullOrWhiteSpace(fontColor)
+                                    ? null
+                                    : new XElement(Rdl + "Color", fontColor),
                                 string.IsNullOrWhiteSpace(fontWeight)
                                     ? null
                                     : new XElement(Rdl + "FontWeight", fontWeight)))),
@@ -823,8 +1491,17 @@ internal sealed class RdlBuilder
     private static string EnsureAtPrefix(string value)
         => value.StartsWith('@') ? value : $"@{value}";
 
+    private static string MakeRdlName(string value)
+    {
+        var cleaned = new string(value.Where(char.IsLetterOrDigit).ToArray());
+        return string.IsNullOrWhiteSpace(cleaned) ? "Item" : cleaned;
+    }
+
     private static string QuoteExpressionText(string value)
         => "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+
+    private static string EscapeExpressionText(string value)
+        => value.Replace("\"", "\"\"", StringComparison.Ordinal);
 
     private static List<string> ParseDependencyNames(string? dependencyList)
         => string.IsNullOrWhiteSpace(dependencyList)

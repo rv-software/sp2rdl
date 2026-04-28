@@ -34,9 +34,13 @@ internal sealed class ReportParameter
 
     public string? BindToDatasetParameterName { get; set; }
 
+    public string? CompareToParameterName { get; set; }
+
+    public string? CompareOperator { get; set; }
+
     public LookupConfig? Lookup { get; set; }
 
-    public List<string> StaticValidValues { get; set; } = new();
+    public List<StaticValidValue> StaticValidValues { get; set; } = new();
 
     public List<ParameterDependency> Dependencies { get; set; } = new();
 

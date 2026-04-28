@@ -24,6 +24,7 @@ internal sealed class ReportDialogService
             try
             {
                 var dialog = new ReportSetupDialog(solutionDirectory, this.sqlIntrospector);
+                DialogThemeService.Apply(dialog, ownerHwnd);
                 if (ownerHwnd != IntPtr.Zero)
                 {
                     new WindowInteropHelper(dialog).Owner = ownerHwnd;
@@ -80,6 +81,7 @@ internal sealed class ReportDialogService
             try
             {
                 var dialog = new DatabaseConnectionDialog(solutionDirectory, currentConnectionString);
+                DialogThemeService.Apply(dialog, ownerHwnd);
                 if (ownerHwnd != IntPtr.Zero)
                 {
                     new WindowInteropHelper(dialog).Owner = ownerHwnd;

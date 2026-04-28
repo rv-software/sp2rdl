@@ -8,11 +8,22 @@
         MinHeight="420"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
-        Background="#1E1E1E">
+        Background="{DynamicResource DialogBackgroundBrush}">
 
     <Window.Resources>
+        <SolidColorBrush x:Key="DialogBackgroundBrush" Color="#1E1E1E"/>
+        <SolidColorBrush x:Key="DialogPanelBrush" Color="#252526"/>
+        <SolidColorBrush x:Key="DialogPrimaryTextBrush" Color="#D4D4D4"/>
+        <SolidColorBrush x:Key="DialogSecondaryTextBrush" Color="#9AA0A6"/>
+        <SolidColorBrush x:Key="DialogFieldBackgroundBrush" Color="#3C3C3C"/>
+        <SolidColorBrush x:Key="DialogFieldTextBrush" Color="#F2F2F2"/>
+        <SolidColorBrush x:Key="DialogBorderBrush" Color="#3F3F46"/>
+        <SolidColorBrush x:Key="DialogButtonBackgroundBrush" Color="#3E3E42"/>
+        <SolidColorBrush x:Key="DialogButtonTextBrush" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="DialogCancelButtonBackgroundBrush" Color="#4A4A4F"/>
+
         <Style x:Key="ActionBtn" TargetType="Button">
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Foreground" Value="{DynamicResource DialogButtonTextBrush}"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="Padding" Value="14,8"/>
             <Setter Property="BorderThickness" Value="0"/>
@@ -31,16 +42,16 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0">
-            <TextBlock x:Name="TxtTitle" Text="SQL editor" Foreground="#D4D4D4" FontSize="18" FontWeight="Bold"/>
-            <TextBlock x:Name="TxtHint" Text="" Foreground="#9AA0A6" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"/>
+            <TextBlock x:Name="TxtTitle" Text="SQL editor" Foreground="{DynamicResource DialogPrimaryTextBrush}" FontSize="18" FontWeight="Bold"/>
+            <TextBlock x:Name="TxtHint" Text="" Foreground="{DynamicResource DialogSecondaryTextBrush}" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"/>
         </StackPanel>
 
         <TextBox Grid.Row="2"
                  x:Name="TxtSql"
-                 Background="#111111"
-                 Foreground="#D4D4D4"
-                 CaretBrush="White"
-                 BorderBrush="#3F3F46"
+                 Background="{DynamicResource DialogFieldBackgroundBrush}"
+                 Foreground="{DynamicResource DialogFieldTextBrush}"
+                 CaretBrush="{DynamicResource DialogFieldTextBrush}"
+                 BorderBrush="{DynamicResource DialogBorderBrush}"
                  BorderThickness="1"
                  Padding="10"
                  AcceptsReturn="True"
@@ -64,12 +75,12 @@
 
         <Grid Grid.Row="5" Margin="0,14,0,0">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
-                <Button x:Name="SuggestButton" Content="Suggest" Background="#3E3E42" Style="{StaticResource ActionBtn}" Width="90" Height="34" Margin="0,0,8,0" Click="SuggestButton_Click"/>
-                <Button x:Name="TestButton" Content="Test" Background="#3E3E42" Style="{StaticResource ActionBtn}" Width="90" Height="34" Click="TestButton_Click"/>
+                <Button x:Name="SuggestButton" Content="Suggest" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Width="90" Height="34" Margin="0,0,8,0" Click="SuggestButton_Click"/>
+                <Button x:Name="TestButton" Content="Test" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Width="90" Height="34" Click="TestButton_Click"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="OK" Background="#27AE60" Style="{StaticResource ActionBtn}" Width="90" Height="34" Margin="0,0,8,0" Click="OkButton_Click"/>
-            <Button Content="Cancel" Background="#4A4A4F" Style="{StaticResource ActionBtn}" Width="90" Height="34" Click="CancelButton_Click"/>
+            <Button Content="OK" Background="#27AE60" Foreground="White" Style="{StaticResource ActionBtn}" Width="90" Height="34" Margin="0,0,8,0" Click="OkButton_Click"/>
+            <Button Content="Cancel" Background="{DynamicResource DialogCancelButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Width="90" Height="34" Click="CancelButton_Click"/>
             </StackPanel>
         </Grid>
     </Grid>

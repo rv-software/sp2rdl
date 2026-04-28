@@ -5,4 +5,7 @@ internal sealed record DatasetField(
     string SqlTypeName,
     bool IsNullable,
     int OrdinalPosition,
-    string? Format = null);
+    string? Format = null,
+    int GroupLevel = 0,
+    string? AggregateFunction = null,
+    bool IncludeInReport = true);
