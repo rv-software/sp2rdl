@@ -549,7 +549,7 @@ public partial class ReportSetupDialog : Window
         var html = "<!doctype html><html><head><meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\" />"
             + "<style>"
             + "body{margin:8px;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff;}"
-            + "p{margin:0 0 6px 0;}ul,ol{margin-top:0;margin-bottom:6px;padding-left:22px;}"
+            + "p{margin:0;line-height:1.15;}ul,ol{margin-top:0;margin-bottom:4px;padding-left:22px;}"
             + "</style></head><body>"
             + body
             + "</body></html>";

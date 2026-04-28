@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Data.SqlClient;
 using System.IO;
 using System.Reflection;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using sp2rdlGenExtension.Model;
 
@@ -18,6 +20,12 @@ internal sealed class RdlBuilder
     private const string TablixFontFamily = "Arial Narrow";
     private const string HeaderBackgroundColor = "#EDEDED";
     private const string GrandTotalBackgroundColor = "#CFCFCF";
+    private static readonly Regex HtmlParagraphRegex = new(
+        @"<p\b(?<attributes>[^>]*)>(?<content>.*?)</p\s*>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex CssTextAlignRegex = new(
+        @"text-align\s*:\s*(?<align>left|center|right)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public XDocument Build(ReportModel model)
     {
@@ -593,14 +601,16 @@ internal sealed class RdlBuilder
                 ToCentimeters(Math.Max(0.4d, height - 0.25d))));
         }
 
+        var memorandumTemplate = PrepareHtmlTemplateForRdl(model.Memorandum.TextTemplate);
         reportItems.Add(BuildPositionedHtmlTextbox(
             "sp2rdlMemorandumText",
-            BuildTemplateExpression(model.Memorandum.TextTemplate, model),
+            BuildTemplateExpression(memorandumTemplate.Html, model),
             ToCentimeters(textLeft),
             "0cm",
             ToCentimeters(textWidth),
             ToCentimeters(Math.Max(0.4d, height - 0.15d)),
-            model.BaseFontFamily));
+            model.BaseFontFamily,
+            memorandumTemplate.TextAlign));
 
         if (model.Memorandum.ShowBottomLine)
         {
@@ -625,14 +635,16 @@ internal sealed class RdlBuilder
             reportItems.Add(BuildLine("sp2rdlReportSummaryTopLine", "0cm", "0cm", ToCentimeters(usableWidth), "0cm"));
         }
 
+        var summaryTemplate = PrepareHtmlTemplateForRdl(model.ReportSummary.TextTemplate);
         reportItems.Add(BuildPositionedHtmlTextbox(
             "sp2rdlReportSummaryText",
-            BuildTemplateExpression(model.ReportSummary.TextTemplate, model),
+            BuildTemplateExpression(summaryTemplate.Html, model),
             "0cm",
             ToCentimeters(textTop),
             ToCentimeters(usableWidth),
             ToCentimeters(Math.Max(0.4d, height - textTop)),
-            model.BaseFontFamily));
+            model.BaseFontFamily,
+            summaryTemplate.TextAlign));
 
         return BuildBandRectangle("sp2rdlReportSummary", reportItems, usableWidth, top, height);
     }
@@ -1774,6 +1786,61 @@ internal sealed class RdlBuilder
 
     private sealed record TemplateToken(string Value, bool IsExpression);
 
+    private static HtmlTemplateForRdl PrepareHtmlTemplateForRdl(string template)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return new HtmlTemplateForRdl(string.Empty, "Left");
+        }
+
+        var matches = HtmlParagraphRegex.Matches(template);
+        if (matches.Count == 0)
+        {
+            return new HtmlTemplateForRdl(template, "Left");
+        }
+
+        var paragraphAlignments = matches
+            .Select(match => ExtractParagraphTextAlign(match.Groups["attributes"].Value))
+            .Where(align => !string.IsNullOrWhiteSpace(align))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var textAlign = paragraphAlignments.Count == 1 ? NormalizeTextAlign(paragraphAlignments[0]!) : "Left";
+
+        var compactHtml = new StringBuilder();
+        var currentIndex = 0;
+        for (var i = 0; i < matches.Count; i++)
+        {
+            var match = matches[i];
+            compactHtml.Append(template, currentIndex, match.Index - currentIndex);
+            compactHtml.Append(match.Groups["content"].Value.Trim());
+            if (i < matches.Count - 1)
+            {
+                compactHtml.Append("<br/>");
+            }
+
+            currentIndex = match.Index + match.Length;
+        }
+
+        compactHtml.Append(template, currentIndex, template.Length - currentIndex);
+        return new HtmlTemplateForRdl(compactHtml.ToString(), textAlign);
+    }
+
+    private static string? ExtractParagraphTextAlign(string attributes)
+    {
+        var match = CssTextAlignRegex.Match(attributes);
+        return match.Success ? match.Groups["align"].Value : null;
+    }
+
+    private static string NormalizeTextAlign(string textAlign)
+        => textAlign.ToLowerInvariant() switch
+        {
+            "right" => "Right",
+            "center" => "Center",
+            _ => "Left"
+        };
+
+    private sealed record HtmlTemplateForRdl(string Html, string TextAlign);
+
     private static XElement BuildPositionedTextbox(
         string name,
         string value,
@@ -1840,7 +1907,8 @@ internal sealed class RdlBuilder
         string top,
         string width,
         string height,
-        string fontFamily)
+        string fontFamily,
+        string textAlign = "Left")
         => new(Rdl + "Textbox",
             new XAttribute("Name", name),
             new XElement(Rdl + "CanGrow", "true"),
@@ -1855,7 +1923,7 @@ internal sealed class RdlBuilder
                                 new XElement(Rdl + "FontFamily", fontFamily),
                                 new XElement(Rdl + "FontSize", "9pt")))),
                     new XElement(Rdl + "Style",
-                        new XElement(Rdl + "TextAlign", "Left")))),
+                        new XElement(Rdl + "TextAlign", textAlign)))),
             new XElement(Rdl + "Top", top),
             new XElement(Rdl + "Left", left),
             new XElement(Rdl + "Height", height),
