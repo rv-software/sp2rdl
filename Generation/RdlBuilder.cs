@@ -132,18 +132,29 @@ internal sealed class RdlBuilder
 
     private static XElement? BuildEmbeddedImages(ReportModel model)
     {
-        var footerLogoPath = model.PageFooter.LogoImagePath;
+        var images = new List<XElement>();
+        AddEmbeddedImage(images, GetFooterLogoImageName(), model.PageFooter.LogoImagePath);
+        AddEmbeddedImage(images, GetMemorandumLogoImageName(), model.Memorandum.LogoImagePath);
 
-        if (string.IsNullOrWhiteSpace(footerLogoPath) || !File.Exists(footerLogoPath))
+        if (images.Count == 0)
         {
             return null;
         }
 
-        return new XElement(Rdl + "EmbeddedImages",
-            new XElement(Rdl + "EmbeddedImage",
-            new XAttribute("Name", GetFooterLogoImageName()),
-            new XElement(Rdl + "MIMEType", GetImageMimeType(footerLogoPath)),
-            new XElement(Rdl + "ImageData", Convert.ToBase64String(File.ReadAllBytes(footerLogoPath)))));
+        return new XElement(Rdl + "EmbeddedImages", images);
+    }
+
+    private static void AddEmbeddedImage(ICollection<XElement> images, string imageName, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        images.Add(new XElement(Rdl + "EmbeddedImage",
+            new XAttribute("Name", imageName),
+            new XElement(Rdl + "MIMEType", GetImageMimeType(path)),
+            new XElement(Rdl + "ImageData", Convert.ToBase64String(File.ReadAllBytes(path)))));
     }
 
     private static XElement BuildQuery(ReportModel model, DatasetConfig dataset)
@@ -385,15 +396,7 @@ internal sealed class RdlBuilder
         var reportItems = new XElement(Rdl + "ReportItems");
         var currentTop = 0.0d;
 
-        var memorandum = BuildReportBandSubreport(
-            "sp2rdlMemorandumSubreport",
-            model.Memorandum.Enabled,
-            model.Memorandum.LayoutMode,
-            model.Memorandum.SubreportName,
-            model.Memorandum.SubreportPath,
-            usableWidth,
-            currentTop,
-            model.Memorandum.HeightInCentimeters);
+        var memorandum = BuildMemorandumBand(model, usableWidth, currentTop);
         if (memorandum is not null)
         {
             reportItems.Add(memorandum);
@@ -451,15 +454,7 @@ internal sealed class RdlBuilder
         reportItems.Add(BuildTablix(dataset, usableWidth, currentTop, model.BaseFontFamily));
         currentTop += EstimateTablixHeight(dataset);
 
-        var reportSummary = BuildReportBandSubreport(
-            "sp2rdlReportSummarySubreport",
-            model.ReportSummary.Enabled,
-            model.ReportSummary.LayoutMode,
-            model.ReportSummary.SubreportName,
-            model.ReportSummary.SubreportPath,
-            usableWidth,
-            currentTop,
-            model.ReportSummary.HeightInCentimeters);
+        var reportSummary = BuildReportSummaryBand(model, usableWidth, currentTop);
         if (reportSummary is not null)
         {
             reportItems.Add(reportSummary);
@@ -469,6 +464,153 @@ internal sealed class RdlBuilder
         body.AddFirst(reportItems);
         body.SetElementValue(Rdl + "Height", ToCentimeters(Math.Max(2.0d, currentTop + 1.25d)));
     }
+
+    private static XElement? BuildMemorandumBand(ReportModel model, double usableWidth, double top)
+    {
+        if (!model.Memorandum.Enabled)
+        {
+            return null;
+        }
+
+        if (model.Memorandum.LayoutMode == ReportBandLayoutMode.Subreport)
+        {
+            var subreport = BuildReportBandSubreport(
+                "sp2rdlMemorandumSubreport",
+                true,
+                model.Memorandum.LayoutMode,
+                model.Memorandum.SubreportName,
+                model.Memorandum.SubreportPath,
+                usableWidth,
+                top,
+                model.Memorandum.HeightInCentimeters);
+            if (subreport is not null || !model.Memorandum.FallbackToInline)
+            {
+                return subreport;
+            }
+        }
+
+        return BuildInlineMemorandum(model, usableWidth, top);
+    }
+
+    private static XElement? BuildReportSummaryBand(ReportModel model, double usableWidth, double top)
+    {
+        if (!model.ReportSummary.Enabled)
+        {
+            return null;
+        }
+
+        if (model.ReportSummary.LayoutMode == ReportBandLayoutMode.Subreport)
+        {
+            var subreport = BuildReportBandSubreport(
+                "sp2rdlReportSummarySubreport",
+                true,
+                model.ReportSummary.LayoutMode,
+                model.ReportSummary.SubreportName,
+                model.ReportSummary.SubreportPath,
+                usableWidth,
+                top,
+                model.ReportSummary.HeightInCentimeters);
+            if (subreport is not null || !model.ReportSummary.FallbackToInline)
+            {
+                return subreport;
+            }
+        }
+
+        return BuildInlineReportSummary(model, usableWidth, top);
+    }
+
+    private static XElement BuildInlineMemorandum(ReportModel model, double usableWidth, double top)
+    {
+        var height = Math.Max(0.8d, model.Memorandum.HeightInCentimeters);
+        var reportItems = new XElement(Rdl + "ReportItems");
+        var hasLogo = !string.IsNullOrWhiteSpace(model.Memorandum.LogoImagePath) && File.Exists(model.Memorandum.LogoImagePath);
+        var logoWidth = hasLogo ? Math.Min(2.4d, usableWidth * 0.25d) : 0.0d;
+        var gap = hasLogo ? 0.35d : 0.0d;
+        var separatorLeft = logoWidth + (gap / 2.0d);
+        var textLeft = hasLogo ? logoWidth + gap : 0.0d;
+        var textWidth = Math.Max(1.0d, usableWidth - textLeft);
+
+        if (hasLogo)
+        {
+            reportItems.Add(BuildImage(
+                "sp2rdlMemorandumLogo",
+                GetMemorandumLogoImageName(),
+                "0cm",
+                "0.1cm",
+                ToCentimeters(logoWidth),
+                ToCentimeters(Math.Max(0.4d, height - 0.3d))));
+        }
+
+        if (hasLogo && model.Memorandum.ShowVerticalSeparator)
+        {
+            reportItems.Add(BuildLine(
+                "sp2rdlMemorandumVerticalLine",
+                ToCentimeters(separatorLeft),
+                "0.1cm",
+                "0cm",
+                ToCentimeters(Math.Max(0.4d, height - 0.25d))));
+        }
+
+        reportItems.Add(BuildPositionedTextbox(
+            "sp2rdlMemorandumText",
+            ResolveTemplateText(model.Memorandum.TextTemplate, model),
+            ToCentimeters(textLeft),
+            "0cm",
+            ToCentimeters(textWidth),
+            ToCentimeters(Math.Max(0.4d, height - 0.15d)),
+            "Left",
+            model.BaseFontFamily,
+            "9pt"));
+
+        if (model.Memorandum.ShowBottomLine)
+        {
+            reportItems.Add(BuildLine(
+                "sp2rdlMemorandumBottomLine",
+                "0cm",
+                ToCentimeters(Math.Max(0.0d, height - 0.05d)),
+                ToCentimeters(usableWidth),
+                "0cm"));
+        }
+
+        return BuildBandRectangle("sp2rdlMemorandum", reportItems, usableWidth, top, height);
+    }
+
+    private static XElement BuildInlineReportSummary(ReportModel model, double usableWidth, double top)
+    {
+        var height = Math.Max(0.6d, model.ReportSummary.HeightInCentimeters);
+        var reportItems = new XElement(Rdl + "ReportItems");
+        var textTop = model.ReportSummary.ShowTopLine ? 0.15d : 0.0d;
+        if (model.ReportSummary.ShowTopLine)
+        {
+            reportItems.Add(BuildLine("sp2rdlReportSummaryTopLine", "0cm", "0cm", ToCentimeters(usableWidth), "0cm"));
+        }
+
+        reportItems.Add(BuildPositionedTextbox(
+            "sp2rdlReportSummaryText",
+            ResolveTemplateText(model.ReportSummary.TextTemplate, model),
+            "0cm",
+            ToCentimeters(textTop),
+            ToCentimeters(usableWidth),
+            ToCentimeters(Math.Max(0.4d, height - textTop)),
+            "Left",
+            model.BaseFontFamily,
+            "9pt"));
+
+        return BuildBandRectangle("sp2rdlReportSummary", reportItems, usableWidth, top, height);
+    }
+
+    private static XElement BuildBandRectangle(string name, XElement reportItems, double usableWidth, double top, double height)
+        => new(Rdl + "Rectangle",
+            new XAttribute("Name", name),
+            reportItems,
+            new XElement(Rdl + "KeepTogether", "true"),
+            new XElement(Rdl + "Top", ToCentimeters(top)),
+            new XElement(Rdl + "Left", "0cm"),
+            new XElement(Rdl + "Height", ToCentimeters(height)),
+            new XElement(Rdl + "Width", ToCentimeters(usableWidth)),
+            new XElement(Rdl + "Style",
+                new XElement(Rdl + "Border",
+                    new XElement(Rdl + "Style", "None"))));
 
     private static XElement? BuildReportBandSubreport(
         string name,
@@ -1469,6 +1611,43 @@ internal sealed class RdlBuilder
             : footer.RightText.Trim();
     }
 
+    private static string ResolveTemplateText(string template, ReportModel model)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return string.Empty;
+        }
+
+        var values = model.ReportVariables.Items
+            .Where(variable => !string.IsNullOrWhiteSpace(variable.Name))
+            .GroupBy(variable => variable.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var variable = group.First();
+                    return variable.StaticValue
+                        ?? variable.FallbackValue
+                        ?? (string.Equals(variable.Name, "CompanyName", StringComparison.OrdinalIgnoreCase)
+                            ? model.CompanyInfo.Text
+                            : string.Empty);
+                },
+                StringComparer.OrdinalIgnoreCase);
+
+        if (!values.ContainsKey("CompanyName"))
+        {
+            values["CompanyName"] = model.CompanyInfo.Text;
+        }
+
+        var resolved = template;
+        foreach (var item in values)
+        {
+            resolved = resolved.Replace("{" + item.Key + "}", item.Value, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return resolved;
+    }
+
     private static XElement BuildPositionedTextbox(
         string name,
         string value,
@@ -1550,8 +1729,29 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "TextAlign", "Center"),
                 new XElement(Rdl + "VerticalAlign", "Middle")));
 
+    private static XElement BuildLine(
+        string name,
+        string left,
+        string top,
+        string width,
+        string height)
+        => new(Rdl + "Line",
+            new XAttribute("Name", name),
+            new XElement(Rdl + "Top", top),
+            new XElement(Rdl + "Left", left),
+            new XElement(Rdl + "Height", height),
+            new XElement(Rdl + "Width", width),
+            new XElement(Rdl + "Style",
+                new XElement(Rdl + "Border",
+                    new XElement(Rdl + "Style", "Solid"),
+                    new XElement(Rdl + "Color", ReportLineColor),
+                    new XElement(Rdl + "Width", ReportLineWidth))));
+
     private static string GetFooterLogoImageName()
         => "sp2rdlFooterLogoImage";
+
+    private static string GetMemorandumLogoImageName()
+        => "sp2rdlMemorandumLogoImage";
 
     private static string GetImageMimeType(string path)
     {
