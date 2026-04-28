@@ -489,6 +489,45 @@ public partial class ReportSetupDialog : Window
         TxtMemorandumTemplate.Focus();
     }
 
+    private void TemplateTextBox_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if (sender is not TextBox textBox)
+        {
+            return;
+        }
+
+        var variables = GetAvailablePlaceholderNames().ToList();
+        if (variables.Count == 0)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var menu = new ContextMenu();
+        foreach (var variable in variables)
+        {
+            var menuItem = new MenuItem { Header = "{" + variable + "}" };
+            menuItem.Click += (_, _) =>
+            {
+                textBox.SelectedText = "{" + variable + "}";
+                textBox.Focus();
+            };
+            menu.Items.Add(menuItem);
+        }
+
+        textBox.ContextMenu = menu;
+    }
+
+    private IEnumerable<string> GetAvailablePlaceholderNames()
+        => this.reportVariables
+            .Where(variable => variable.Enabled && !string.IsNullOrWhiteSpace(variable.Name))
+            .Select(variable => variable.Name.Trim())
+            .Concat(["CompanyName", "ReportTitle"])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase);
+
     private void DependsOnDropDownButton_Click(object sender, RoutedEventArgs e)
     {
         CommitPendingGridEdits();

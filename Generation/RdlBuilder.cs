@@ -123,12 +123,54 @@ internal sealed class RdlBuilder
     }
 
     private static XElement BuildDataSets(ReportModel model)
-        => new(Rdl + "DataSets",
-            model.Datasets.Select(dataset =>
+    {
+        var datasets = model.Datasets.ToList();
+        var reportVariablesDataset = BuildReportVariablesDataset(model);
+        if (reportVariablesDataset is not null)
+        {
+            datasets.Add(reportVariablesDataset);
+        }
+
+        return new XElement(Rdl + "DataSets",
+            datasets.Select(dataset =>
                 new XElement(Rdl + "DataSet",
                     new XAttribute("Name", dataset.Name),
                     BuildQuery(model, dataset),
                     BuildFields(dataset))));
+    }
+
+    private static DatasetConfig? BuildReportVariablesDataset(ReportModel model)
+    {
+        if (!model.ReportVariables.DynamicSource.Enabled
+            || string.IsNullOrWhiteSpace(model.ReportVariables.DynamicSource.SqlExpression))
+        {
+            return null;
+        }
+
+        var fields = model.ReportVariables.Items
+            .Where(variable => variable.Enabled && !string.IsNullOrWhiteSpace(variable.SourceColumnName))
+            .Select((variable, index) => new DatasetField(
+                variable.SourceColumnName!.Trim(),
+                "nvarchar",
+                true,
+                index + 1))
+            .DistinctBy(field => field.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (fields.Count == 0)
+        {
+            return null;
+        }
+
+        return new DatasetConfig
+        {
+            Name = string.IsNullOrWhiteSpace(model.ReportVariables.DynamicSource.DatasetName)
+                ? "dsReportVariables"
+                : model.ReportVariables.DynamicSource.DatasetName,
+            Command = model.ReportVariables.DynamicSource.SqlExpression,
+            CommandKind = CommandKind.Text,
+            Fields = fields
+        };
+    }
 
     private static XElement? BuildEmbeddedImages(ReportModel model)
     {
@@ -553,7 +595,7 @@ internal sealed class RdlBuilder
 
         reportItems.Add(BuildPositionedHtmlTextbox(
             "sp2rdlMemorandumText",
-            ResolveTemplateText(model.Memorandum.TextTemplate, model),
+            BuildTemplateExpression(model.Memorandum.TextTemplate, model),
             ToCentimeters(textLeft),
             "0cm",
             ToCentimeters(textWidth),
@@ -585,7 +627,7 @@ internal sealed class RdlBuilder
 
         reportItems.Add(BuildPositionedTextbox(
             "sp2rdlReportSummaryText",
-            ResolveTemplateText(model.ReportSummary.TextTemplate, model),
+            BuildTemplateExpression(model.ReportSummary.TextTemplate, model),
             "0cm",
             ToCentimeters(textTop),
             ToCentimeters(usableWidth),
@@ -1520,7 +1562,7 @@ internal sealed class RdlBuilder
             new XElement(Rdl + "ReportItems",
                 BuildPositionedTextbox(
                     "sp2rdlHeaderLeft",
-                    ResolveTemplateText(leftText, model),
+                    BuildTemplateExpression(leftText, model),
                     "0cm",
                     "0cm",
                     ToCentimeters(textboxWidth),
@@ -1529,7 +1571,7 @@ internal sealed class RdlBuilder
                     model.BaseFontFamily),
                 BuildPositionedTextbox(
                     "sp2rdlHeaderRight",
-                    ResolveTemplateText(rightText, model),
+                    BuildTemplateExpression(rightText, model),
                     ToCentimeters(textboxWidth + gap),
                     "0cm",
                     ToCentimeters(textboxWidth),
@@ -1653,6 +1695,86 @@ internal sealed class RdlBuilder
 
         return resolved;
     }
+
+    private static string BuildTemplateExpression(string template, ReportModel model)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return string.Empty;
+        }
+
+        var tokens = TokenizeTemplate(template, model).ToList();
+        if (tokens.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        return tokens.Count == 1 && !tokens[0].IsExpression
+            ? tokens[0].Value
+            : "=" + string.Join(" & ", tokens.Select(token => token.IsExpression ? token.Value : QuoteExpressionText(token.Value)));
+    }
+
+    private static IEnumerable<TemplateToken> TokenizeTemplate(string template, ReportModel model)
+    {
+        var variablesByName = model.ReportVariables.Items
+            .Where(variable => variable.Enabled && !string.IsNullOrWhiteSpace(variable.Name))
+            .GroupBy(variable => variable.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+        var index = 0;
+        while (index < template.Length)
+        {
+            var start = template.IndexOf('{', index);
+            if (start < 0)
+            {
+                yield return new TemplateToken(template[index..], false);
+                yield break;
+            }
+
+            if (start > index)
+            {
+                yield return new TemplateToken(template[index..start], false);
+            }
+
+            var end = template.IndexOf('}', start + 1);
+            if (end < 0)
+            {
+                yield return new TemplateToken(template[start..], false);
+                yield break;
+            }
+
+            var name = template.Substring(start + 1, end - start - 1).Trim();
+            yield return BuildPlaceholderToken(name, model, variablesByName);
+            index = end + 1;
+        }
+    }
+
+    private static TemplateToken BuildPlaceholderToken(string name, ReportModel model, IReadOnlyDictionary<string, ReportVariableConfig> variablesByName)
+    {
+        if (string.Equals(name, "ReportTitle", StringComparison.OrdinalIgnoreCase))
+        {
+            return new TemplateToken(string.IsNullOrWhiteSpace(model.ReportTitle.Text) ? model.Name : model.ReportTitle.Text, false);
+        }
+
+        if (!variablesByName.TryGetValue(name, out var variable))
+        {
+            return new TemplateToken("{" + name + "}", false);
+        }
+
+        if (model.ReportVariables.DynamicSource.Enabled
+            && !string.IsNullOrWhiteSpace(model.ReportVariables.DynamicSource.SqlExpression)
+            && !string.IsNullOrWhiteSpace(variable.SourceColumnName))
+        {
+            var datasetName = string.IsNullOrWhiteSpace(model.ReportVariables.DynamicSource.DatasetName)
+                ? "dsReportVariables"
+                : model.ReportVariables.DynamicSource.DatasetName;
+            return new TemplateToken($"CStr(First(Fields!{variable.SourceColumnName.Trim()}.Value, {QuoteExpressionText(datasetName)}))", true);
+        }
+
+        return new TemplateToken(variable.StaticValue ?? variable.FallbackValue ?? string.Empty, false);
+    }
+
+    private sealed record TemplateToken(string Value, bool IsExpression);
 
     private static XElement BuildPositionedTextbox(
         string name,

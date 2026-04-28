@@ -594,7 +594,7 @@
                             <Button Content="{}{CompanyName}" Width="124" Height="28" Margin="0,0,4,0" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Click="MemorandumCompanyPlaceholderButton_Click"/>
                             <Button Content="{}{ReportTitle}" Width="120" Height="28" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Click="MemorandumReportTitlePlaceholderButton_Click"/>
                         </WrapPanel>
-                        <TextBox Grid.Row="2" x:Name="TxtMemorandumTemplate" Style="{StaticResource FieldBox}" Height="128" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+                        <TextBox Grid.Row="2" x:Name="TxtMemorandumTemplate" Style="{StaticResource FieldBox}" Height="128" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" ContextMenuOpening="TemplateTextBox_ContextMenuOpening"/>
                     </Grid>
 
                     <TextBlock Grid.Row="14" Grid.Column="0" Text="Logo:" Style="{StaticResource LabelText}"/>
@@ -650,7 +650,7 @@
                     </Grid>
 
                     <TextBlock Grid.Row="6" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="6" Grid.Column="1" x:Name="TxtReportSummaryTemplate" Style="{StaticResource FieldBox}" Height="120" AcceptsReturn="True" TextWrapping="Wrap"/>
+                    <TextBox Grid.Row="6" Grid.Column="1" x:Name="TxtReportSummaryTemplate" Style="{StaticResource FieldBox}" Height="120" AcceptsReturn="True" TextWrapping="Wrap" ContextMenuOpening="TemplateTextBox_ContextMenuOpening"/>
 
                     <TextBlock Grid.Row="8" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
                     <TextBox Grid.Row="8" Grid.Column="1" x:Name="TxtReportSummaryHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
