@@ -283,6 +283,12 @@ public partial class ReportSetupDialog : Window
     private void BrowseMemorandumLogoButton_Click(object sender, RoutedEventArgs e)
         => BrowseImagePath(TxtMemorandumLogo, "Select memorandum logo", "Could not choose memorandum logo");
 
+    private void BrowseMemorandumSubreportButton_Click(object sender, RoutedEventArgs e)
+        => BrowseReportDefinitionPath(TxtMemorandumSubreport, "Select memorandum subreport", "Could not choose memorandum subreport");
+
+    private void BrowseReportSummarySubreportButton_Click(object sender, RoutedEventArgs e)
+        => BrowseReportDefinitionPath(TxtReportSummarySubreport, "Select report summary subreport", "Could not choose report summary subreport");
+
     private void BrowseImagePath(TextBox targetTextBox, string title, string errorMessage)
     {
         try
@@ -291,6 +297,28 @@ public partial class ReportSetupDialog : Window
             {
                 Title = title,
                 Filter = "Image files (*.png;*.jpg;*.jpeg;*.bmp;*.gif)|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files (*.*)|*.*",
+                CheckFileExists = true
+            };
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                targetTextBox.Text = dialog.FileName;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"{errorMessage}:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void BrowseReportDefinitionPath(TextBox targetTextBox, string title, string errorMessage)
+    {
+        try
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = title,
+                Filter = "Report definition (*.rdl;*.rdlc)|*.rdl;*.rdlc|All files (*.*)|*.*",
                 CheckFileExists = true
             };
 
@@ -775,12 +803,20 @@ public partial class ReportSetupDialog : Window
         reportModel.ReportVariables.DynamicSource.SqlExpression = reportModel.CompanyInfo.SqlExpression ?? string.Empty;
         UpsertReportVariable(reportModel.ReportVariables, "CompanyName", "CompanyName", reportModel.CompanyInfo.Text);
         reportModel.Memorandum.Enabled = ChkMemorandumEnabled.IsChecked == true;
+        reportModel.Memorandum.LayoutMode = ReadReportBandLayoutMode(CmbMemorandumLayoutMode);
+        reportModel.Memorandum.SubreportPath = NormalizeOptional(TxtMemorandumSubreport.Text);
+        reportModel.Memorandum.SubreportName = BuildSubreportName(reportModel.Memorandum.SubreportPath);
+        reportModel.Memorandum.FallbackToInline = ChkMemorandumFallbackInline.IsChecked == true;
         reportModel.Memorandum.TextTemplate = TxtMemorandumTemplate.Text.Trim();
         reportModel.Memorandum.LogoImagePath = NormalizeOptional(TxtMemorandumLogo.Text);
         reportModel.Memorandum.ShowVerticalSeparator = ChkMemorandumVerticalLine.IsChecked == true;
         reportModel.Memorandum.ShowBottomLine = ChkMemorandumBottomLine.IsChecked == true;
         reportModel.Memorandum.HeightInCentimeters = ReadPositiveDouble(TxtMemorandumHeight.Text, reportModel.Memorandum.HeightInCentimeters);
         reportModel.ReportSummary.Enabled = ChkReportSummaryEnabled.IsChecked == true;
+        reportModel.ReportSummary.LayoutMode = ReadReportBandLayoutMode(CmbReportSummaryLayoutMode);
+        reportModel.ReportSummary.SubreportPath = NormalizeOptional(TxtReportSummarySubreport.Text);
+        reportModel.ReportSummary.SubreportName = BuildSubreportName(reportModel.ReportSummary.SubreportPath);
+        reportModel.ReportSummary.FallbackToInline = ChkReportSummaryFallbackInline.IsChecked == true;
         reportModel.ReportSummary.TextTemplate = TxtReportSummaryTemplate.Text.Trim();
         reportModel.ReportSummary.ShowTopLine = ChkReportSummaryTopLine.IsChecked == true;
         reportModel.ReportSummary.HeightInCentimeters = ReadPositiveDouble(TxtReportSummaryHeight.Text, reportModel.ReportSummary.HeightInCentimeters);
@@ -850,6 +886,9 @@ public partial class ReportSetupDialog : Window
         TxtCompanySql.Text = model.CompanyInfo.SqlExpression ?? string.Empty;
         TxtCompanyEndpoint.Text = model.CompanyInfo.BackendEndpoint ?? string.Empty;
         ChkMemorandumEnabled.IsChecked = model.Memorandum.Enabled;
+        SetReportBandLayoutMode(CmbMemorandumLayoutMode, model.Memorandum.LayoutMode);
+        TxtMemorandumSubreport.Text = model.Memorandum.SubreportPath ?? model.Memorandum.SubreportName ?? string.Empty;
+        ChkMemorandumFallbackInline.IsChecked = model.Memorandum.FallbackToInline;
         TxtMemorandumTemplate.Text = string.IsNullOrWhiteSpace(model.Memorandum.TextTemplate)
             ? "{CompanyName}"
             : model.Memorandum.TextTemplate;
@@ -858,6 +897,9 @@ public partial class ReportSetupDialog : Window
         ChkMemorandumBottomLine.IsChecked = model.Memorandum.ShowBottomLine;
         TxtMemorandumHeight.Text = ToUiNumber(model.Memorandum.HeightInCentimeters);
         ChkReportSummaryEnabled.IsChecked = model.ReportSummary.Enabled;
+        SetReportBandLayoutMode(CmbReportSummaryLayoutMode, model.ReportSummary.LayoutMode);
+        TxtReportSummarySubreport.Text = model.ReportSummary.SubreportPath ?? model.ReportSummary.SubreportName ?? string.Empty;
+        ChkReportSummaryFallbackInline.IsChecked = model.ReportSummary.FallbackToInline;
         TxtReportSummaryTemplate.Text = model.ReportSummary.TextTemplate;
         ChkReportSummaryTopLine.IsChecked = model.ReportSummary.ShowTopLine;
         TxtReportSummaryHeight.Text = ToUiNumber(model.ReportSummary.HeightInCentimeters);
@@ -1000,6 +1042,42 @@ public partial class ReportSetupDialog : Window
             PageFooterDisplayMode.AllExceptFirstPage => (false, true),
             _ => (true, true)
         };
+    }
+
+    private static ReportBandLayoutMode ReadReportBandLayoutMode(ComboBox comboBox)
+    {
+        var tag = (comboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return Enum.TryParse<ReportBandLayoutMode>(tag, ignoreCase: true, out var mode)
+            ? mode
+            : ReportBandLayoutMode.Inline;
+    }
+
+    private static void SetReportBandLayoutMode(ComboBox comboBox, ReportBandLayoutMode mode)
+    {
+        foreach (var item in comboBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), mode.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        comboBox.SelectedIndex = 0;
+    }
+
+    private static string? BuildSubreportName(string? subreportPath)
+    {
+        if (string.IsNullOrWhiteSpace(subreportPath))
+        {
+            return null;
+        }
+
+        var value = subreportPath.Trim();
+        var extension = Path.GetExtension(value);
+        return string.IsNullOrWhiteSpace(extension)
+            ? value
+            : Path.GetFileNameWithoutExtension(value);
     }
 
     private void ApplyReportParameters(IEnumerable<ReportParameter> parameters)

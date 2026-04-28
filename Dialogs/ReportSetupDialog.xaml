@@ -121,6 +121,12 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="10"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" Style="{StaticResource LabelText}"/>
@@ -411,15 +417,28 @@
                         <CheckBox x:Name="ChkMemorandumBottomLine" Content="Bottom line" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <TextBlock Grid.Row="14" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="14" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtMemorandumTemplate" Style="{StaticResource FieldBox}" Height="88" AcceptsReturn="True" TextWrapping="Wrap"/>
+                    <TextBlock Grid.Row="14" Grid.Column="0" Text="Layout mode:" Style="{StaticResource LabelText}"/>
+                    <StackPanel Grid.Row="14" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
+                        <ComboBox x:Name="CmbMemorandumLayoutMode" Style="{StaticResource FieldCombo}" Width="160" SelectedIndex="0">
+                            <ComboBoxItem Content="Inline" Tag="Inline"/>
+                            <ComboBoxItem Content="Subreport" Tag="Subreport"/>
+                        </ComboBox>
+                        <CheckBox x:Name="ChkMemorandumFallbackInline" Content="Fallback to inline" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="18,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
 
-                    <TextBlock Grid.Row="16" Grid.Column="0" Text="Logo:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="16" Grid.Column="1" x:Name="TxtMemorandumLogo" Style="{StaticResource FieldBox}" Height="34"/>
-                    <Button Grid.Row="16" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumLogoButton_Click"/>
+                    <TextBlock Grid.Row="16" Grid.Column="0" Text="Subreport:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="16" Grid.Column="1" x:Name="TxtMemorandumSubreport" Style="{StaticResource FieldBox}" Height="34"/>
+                    <Button Grid.Row="16" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumSubreportButton_Click"/>
 
-                    <TextBlock Grid.Row="18" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="18" Grid.Column="1" x:Name="TxtMemorandumHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
+                    <TextBlock Grid.Row="18" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="18" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtMemorandumTemplate" Style="{StaticResource FieldBox}" Height="88" AcceptsReturn="True" TextWrapping="Wrap"/>
+
+                    <TextBlock Grid.Row="20" Grid.Column="0" Text="Logo:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="20" Grid.Column="1" x:Name="TxtMemorandumLogo" Style="{StaticResource FieldBox}" Height="34"/>
+                    <Button Grid.Row="20" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumLogoButton_Click"/>
+
+                    <TextBlock Grid.Row="22" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="22" Grid.Column="1" x:Name="TxtMemorandumHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
                 </Grid>
             </TabItem>
 
@@ -435,6 +454,10 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="10"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Summary:" Style="{StaticResource LabelText}"/>
                     <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal">
@@ -442,11 +465,31 @@
                         <CheckBox x:Name="ChkReportSummaryTopLine" Content="Top line" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="TxtReportSummaryTemplate" Style="{StaticResource FieldBox}" Height="120" AcceptsReturn="True" TextWrapping="Wrap"/>
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Layout mode:" Style="{StaticResource LabelText}"/>
+                    <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal">
+                        <ComboBox x:Name="CmbReportSummaryLayoutMode" Style="{StaticResource FieldCombo}" Width="160" SelectedIndex="0">
+                            <ComboBoxItem Content="Inline" Tag="Inline"/>
+                            <ComboBoxItem Content="Subreport" Tag="Subreport"/>
+                        </ComboBox>
+                        <CheckBox x:Name="ChkReportSummaryFallbackInline" Content="Fallback to inline" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="18,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
 
-                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="4" Grid.Column="1" x:Name="TxtReportSummaryHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
+                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Subreport:" Style="{StaticResource LabelText}"/>
+                    <Grid Grid.Row="4" Grid.Column="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="12"/>
+                            <ColumnDefinition Width="120"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0" x:Name="TxtReportSummarySubreport" Style="{StaticResource FieldBox}" Height="34"/>
+                        <Button Grid.Column="2" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseReportSummarySubreportButton_Click"/>
+                    </Grid>
+
+                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="6" Grid.Column="1" x:Name="TxtReportSummaryTemplate" Style="{StaticResource FieldBox}" Height="120" AcceptsReturn="True" TextWrapping="Wrap"/>
+
+                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="8" Grid.Column="1" x:Name="TxtReportSummaryHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
                 </Grid>
             </TabItem>
 
