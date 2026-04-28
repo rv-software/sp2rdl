@@ -32,6 +32,12 @@ internal sealed class ReportModel
 
     public CompanyInfoConfig CompanyInfo { get; set; } = new();
 
+    public ReportVariablesConfig ReportVariables { get; set; } = new();
+
+    public MemorandumConfig Memorandum { get; set; } = new();
+
+    public ReportSummaryConfig ReportSummary { get; set; } = new();
+
     public PageSetupConfig PageSetup { get; set; } = new();
 
     public PageHeaderConfig PageHeader { get; set; } = new();

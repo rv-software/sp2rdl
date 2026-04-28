@@ -10,6 +10,10 @@ internal sealed class PageFooterConfig
 
     public bool ShowPageNumber { get; set; } = true;
 
+    public bool ShowTopLine { get; set; }
+
+    public PageFooterDisplayMode DisplayMode { get; set; } = PageFooterDisplayMode.AllPages;
+
     public double HeightInCentimeters { get; set; } = 1.0d;
 
     public bool PrintOnFirstPage { get; set; } = true;

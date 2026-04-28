@@ -278,24 +278,30 @@ public partial class ReportSetupDialog : Window
     }
 
     private void BrowseFooterLogoButton_Click(object sender, RoutedEventArgs e)
+        => BrowseImagePath(TxtFooterLogo, "Select footer logo", "Could not choose footer logo");
+
+    private void BrowseMemorandumLogoButton_Click(object sender, RoutedEventArgs e)
+        => BrowseImagePath(TxtMemorandumLogo, "Select memorandum logo", "Could not choose memorandum logo");
+
+    private void BrowseImagePath(TextBox targetTextBox, string title, string errorMessage)
     {
         try
         {
             var dialog = new OpenFileDialog
             {
-                Title = "Select footer logo",
+                Title = title,
                 Filter = "Image files (*.png;*.jpg;*.jpeg;*.bmp;*.gif)|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files (*.*)|*.*",
                 CheckFileExists = true
             };
 
             if (dialog.ShowDialog(this) == true)
             {
-                TxtFooterLogo.Text = dialog.FileName;
+                targetTextBox.Text = dialog.FileName;
             }
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Could not choose footer logo:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"{errorMessage}:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -765,10 +771,29 @@ public partial class ReportSetupDialog : Window
         reportModel.CompanyInfo.Text = TxtCompanyName.Text.Trim();
         reportModel.CompanyInfo.SqlExpression = NormalizeOptional(TxtCompanySql.Text);
         reportModel.CompanyInfo.BackendEndpoint = NormalizeOptional(TxtCompanyEndpoint.Text);
+        reportModel.ReportVariables.DynamicSource.Enabled = !string.IsNullOrWhiteSpace(reportModel.CompanyInfo.SqlExpression);
+        reportModel.ReportVariables.DynamicSource.SqlExpression = reportModel.CompanyInfo.SqlExpression ?? string.Empty;
+        UpsertReportVariable(reportModel.ReportVariables, "CompanyName", "CompanyName", reportModel.CompanyInfo.Text);
+        reportModel.Memorandum.Enabled = ChkMemorandumEnabled.IsChecked == true;
+        reportModel.Memorandum.TextTemplate = TxtMemorandumTemplate.Text.Trim();
+        reportModel.Memorandum.LogoImagePath = NormalizeOptional(TxtMemorandumLogo.Text);
+        reportModel.Memorandum.ShowVerticalSeparator = ChkMemorandumVerticalLine.IsChecked == true;
+        reportModel.Memorandum.ShowBottomLine = ChkMemorandumBottomLine.IsChecked == true;
+        reportModel.Memorandum.HeightInCentimeters = ReadPositiveDouble(TxtMemorandumHeight.Text, reportModel.Memorandum.HeightInCentimeters);
+        reportModel.ReportSummary.Enabled = ChkReportSummaryEnabled.IsChecked == true;
+        reportModel.ReportSummary.TextTemplate = TxtReportSummaryTemplate.Text.Trim();
+        reportModel.ReportSummary.ShowTopLine = ChkReportSummaryTopLine.IsChecked == true;
+        reportModel.ReportSummary.HeightInCentimeters = ReadPositiveDouble(TxtReportSummaryHeight.Text, reportModel.ReportSummary.HeightInCentimeters);
         reportModel.PageSetup = BuildPageSetup();
         reportModel.PageHeader.RightText = TxtHeaderRight.Text.Trim();
+        reportModel.PageFooter.Enabled = ChkPageFooterEnabled.IsChecked == true;
         reportModel.PageFooter.LeftText = TxtFooterLeft.Text.Trim();
         reportModel.PageFooter.LogoImagePath = NormalizeOptional(TxtFooterLogo.Text);
+        reportModel.PageFooter.ShowPageNumber = ChkPageFooterNumber.IsChecked == true;
+        reportModel.PageFooter.ShowTopLine = ChkPageFooterTopLine.IsChecked == true;
+        reportModel.PageFooter.DisplayMode = ReadPageFooterDisplayMode();
+        reportModel.PageFooter.HeightInCentimeters = ReadPositiveDouble(TxtPageFooterHeight.Text, reportModel.PageFooter.HeightInCentimeters);
+        ApplyPageFooterDisplayModeFlags(reportModel.PageFooter);
         reportModel.Parameters = BuildReportParametersFromGrid();
         NormalizeReportParameters(reportModel.Parameters);
         if (metadata is not null)
@@ -824,9 +849,26 @@ public partial class ReportSetupDialog : Window
         TxtCompanyName.Text = model.CompanyInfo.Text;
         TxtCompanySql.Text = model.CompanyInfo.SqlExpression ?? string.Empty;
         TxtCompanyEndpoint.Text = model.CompanyInfo.BackendEndpoint ?? string.Empty;
+        ChkMemorandumEnabled.IsChecked = model.Memorandum.Enabled;
+        TxtMemorandumTemplate.Text = string.IsNullOrWhiteSpace(model.Memorandum.TextTemplate)
+            ? "{CompanyName}"
+            : model.Memorandum.TextTemplate;
+        TxtMemorandumLogo.Text = model.Memorandum.LogoImagePath ?? string.Empty;
+        ChkMemorandumVerticalLine.IsChecked = model.Memorandum.ShowVerticalSeparator;
+        ChkMemorandumBottomLine.IsChecked = model.Memorandum.ShowBottomLine;
+        TxtMemorandumHeight.Text = ToUiNumber(model.Memorandum.HeightInCentimeters);
+        ChkReportSummaryEnabled.IsChecked = model.ReportSummary.Enabled;
+        TxtReportSummaryTemplate.Text = model.ReportSummary.TextTemplate;
+        ChkReportSummaryTopLine.IsChecked = model.ReportSummary.ShowTopLine;
+        TxtReportSummaryHeight.Text = ToUiNumber(model.ReportSummary.HeightInCentimeters);
         TxtHeaderRight.Text = model.PageHeader.RightText;
+        ChkPageFooterEnabled.IsChecked = model.PageFooter.Enabled;
         TxtFooterLeft.Text = model.PageFooter.LeftText;
         TxtFooterLogo.Text = model.PageFooter.LogoImagePath ?? string.Empty;
+        ChkPageFooterNumber.IsChecked = model.PageFooter.ShowPageNumber;
+        ChkPageFooterTopLine.IsChecked = model.PageFooter.ShowTopLine;
+        SetPageFooterDisplayMode(ResolvePageFooterDisplayMode(model.PageFooter));
+        TxtPageFooterHeight.Text = ToUiNumber(model.PageFooter.HeightInCentimeters);
         SetBaseFontFamily(model.BaseFontFamily);
         SetOutputMode(model.OutputMode);
         ApplyPageSetup(model.PageSetup);
@@ -895,6 +937,70 @@ public partial class ReportSetupDialog : Window
 
     private static string EnsureAtPrefixLocal(string value)
         => value.StartsWith('@') ? value : "@" + value;
+
+    private static void UpsertReportVariable(
+        ReportVariablesConfig variables,
+        string name,
+        string sourceColumnName,
+        string fallbackValue)
+    {
+        var item = variables.Items.FirstOrDefault(variable =>
+            string.Equals(variable.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (item is null)
+        {
+            item = new ReportVariableConfig { Name = name };
+            variables.Items.Add(item);
+        }
+
+        item.SourceColumnName = sourceColumnName;
+        item.FallbackValue = fallbackValue;
+        if (string.IsNullOrWhiteSpace(item.StaticValue) && string.IsNullOrWhiteSpace(sourceColumnName))
+        {
+            item.StaticValue = fallbackValue;
+        }
+    }
+
+    private static PageFooterDisplayMode ResolvePageFooterDisplayMode(PageFooterConfig footer)
+        => (footer.PrintOnFirstPage, footer.PrintOnLastPage) switch
+        {
+            (true, true) => footer.DisplayMode,
+            (true, false) => PageFooterDisplayMode.FirstPageOnly,
+            (false, true) => PageFooterDisplayMode.AllExceptFirstPage,
+            _ => PageFooterDisplayMode.AllPages
+        };
+
+    private PageFooterDisplayMode ReadPageFooterDisplayMode()
+    {
+        var tag = (CmbPageFooterDisplayMode.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return Enum.TryParse<PageFooterDisplayMode>(tag, ignoreCase: true, out var mode)
+            ? mode
+            : PageFooterDisplayMode.AllPages;
+    }
+
+    private void SetPageFooterDisplayMode(PageFooterDisplayMode mode)
+    {
+        foreach (var item in CmbPageFooterDisplayMode.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), mode.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                CmbPageFooterDisplayMode.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbPageFooterDisplayMode.SelectedIndex = 0;
+    }
+
+    private static void ApplyPageFooterDisplayModeFlags(PageFooterConfig footer)
+    {
+        (footer.PrintOnFirstPage, footer.PrintOnLastPage) = footer.DisplayMode switch
+        {
+            PageFooterDisplayMode.FirstPageOnly => (true, false),
+            PageFooterDisplayMode.LastPageOnly => (false, true),
+            PageFooterDisplayMode.AllExceptFirstPage => (false, true),
+            _ => (true, true)
+        };
+    }
 
     private void ApplyReportParameters(IEnumerable<ReportParameter> parameters)
     {
