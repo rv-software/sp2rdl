@@ -59,6 +59,7 @@ public partial class ReportSetupDialog : Window
     private readonly ObservableCollection<DatasetFieldDraft> fieldDrafts = new();
     private readonly ObservableCollection<ReportParameter> reportParameters = new();
     private readonly ObservableCollection<RichTextParagraphConfig> memorandumParagraphs = new();
+    private readonly ObservableCollection<ReportVariableConfig> reportVariables = new();
     private readonly ObservableCollection<Choice<string>> storedProcedureParameterChoices = new();
     private readonly CancellationTokenSource cts = new();
     private StoredProcedureMetadata? currentMetadata;
@@ -82,6 +83,7 @@ public partial class ReportSetupDialog : Window
         ColMemorandumListStyle.ItemsSource = ListStyleOptions;
         GridFields.ItemsSource = this.fieldDrafts;
         GridReportParameters.ItemsSource = this.reportParameters;
+        GridReportVariables.ItemsSource = this.reportVariables;
         GridMemorandumParagraphs.ItemsSource = this.memorandumParagraphs;
         this.memorandumParagraphs.Add(new RichTextParagraphConfig { Text = "{CompanyName}", Bold = true, FontSizeInPoints = 11.0d });
         GridReportParameters.RowEditEnding += GridReportParameters_RowEditEnding;
@@ -427,6 +429,26 @@ public partial class ReportSetupDialog : Window
                 parameter.Lookup = null;
                 parameter.LookupSql = null;
             }
+        }
+    }
+
+    private void EditReportVariablesSqlButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        var dialog = new SqlEditorDialog(
+            "Report variables SQL",
+            TxtReportVariablesSql.Text,
+            "SQL treba vratiti jednu vrstu. Kolone iz prve vrste mogu se koristiti kao placeholderi, npr. {CompanyName}.",
+            previewSqlAsync: sql => PreviewSqlAsync(sql))
+        {
+            Owner = this
+        };
+        DialogThemeService.ApplyFromOwner(dialog, this);
+
+        if (dialog.ShowDialog() == true)
+        {
+            TxtReportVariablesSql.Text = dialog.SqlText.Trim();
         }
     }
 
@@ -802,12 +824,13 @@ public partial class ReportSetupDialog : Window
         reportModel.ReportTitle.Text = string.IsNullOrWhiteSpace(TxtReportTitle.Text)
             ? reportModel.Name
             : TxtReportTitle.Text.Trim();
-        reportModel.ReportTitle.ShowInPageHeaderAfterFirstPage = ChkTitleInHeader.IsChecked == true;
+        reportModel.ReportTitle.ShowInPageHeaderAfterFirstPage = false;
         reportModel.CompanyInfo.Text = TxtCompanyName.Text.Trim();
         reportModel.CompanyInfo.SqlExpression = NormalizeOptional(TxtCompanySql.Text);
         reportModel.CompanyInfo.BackendEndpoint = NormalizeOptional(TxtCompanyEndpoint.Text);
-        reportModel.ReportVariables.DynamicSource.Enabled = !string.IsNullOrWhiteSpace(reportModel.CompanyInfo.SqlExpression);
-        reportModel.ReportVariables.DynamicSource.SqlExpression = reportModel.CompanyInfo.SqlExpression ?? string.Empty;
+        reportModel.ReportVariables.DynamicSource.Enabled = !string.IsNullOrWhiteSpace(TxtReportVariablesSql.Text);
+        reportModel.ReportVariables.DynamicSource.SqlExpression = TxtReportVariablesSql.Text.Trim();
+        reportModel.ReportVariables.Items = BuildReportVariablesFromGrid();
         UpsertReportVariable(reportModel.ReportVariables, "CompanyName", "CompanyName", reportModel.CompanyInfo.Text);
         reportModel.Memorandum.Enabled = ChkMemorandumEnabled.IsChecked == true;
         reportModel.Memorandum.LayoutMode = ReadReportBandLayoutMode(CmbMemorandumLayoutMode);
@@ -835,6 +858,7 @@ public partial class ReportSetupDialog : Window
         reportModel.PageHeader.LeftText = TxtHeaderLeft.Text.Trim();
         reportModel.PageHeader.RightText = TxtHeaderRight.Text.Trim();
         reportModel.PageHeader.HeightInCentimeters = ReadPositiveDouble(TxtPageHeaderHeight.Text, reportModel.PageHeader.HeightInCentimeters);
+        reportModel.PageHeader.PrintOnFirstPage = ChkPageHeaderFirstPage.IsChecked == true;
         reportModel.PageFooter.Enabled = ChkPageFooterEnabled.IsChecked == true;
         reportModel.PageFooter.LeftText = TxtFooterLeft.Text.Trim();
         reportModel.PageFooter.RightText = TxtFooterRight.Text.Trim();
@@ -844,6 +868,7 @@ public partial class ReportSetupDialog : Window
         reportModel.PageFooter.DisplayMode = ReadPageFooterDisplayMode();
         reportModel.PageFooter.HeightInCentimeters = ReadPositiveDouble(TxtPageFooterHeight.Text, reportModel.PageFooter.HeightInCentimeters);
         ApplyPageFooterDisplayModeFlags(reportModel.PageFooter);
+        reportModel.PageFooter.PrintOnLastPage = ChkPageFooterLastPage.IsChecked == true;
         reportModel.Parameters = BuildReportParametersFromGrid();
         NormalizeReportParameters(reportModel.Parameters);
         if (metadata is not null)
@@ -895,10 +920,11 @@ public partial class ReportSetupDialog : Window
         TxtOutputPath.Text = model.OutputPath ?? string.Empty;
         TxtReportTitle.Text = model.ReportTitle.Text;
         ChkReportTitleEnabled.IsChecked = model.ReportTitle.Enabled;
-        ChkTitleInHeader.IsChecked = model.ReportTitle.ShowInPageHeaderAfterFirstPage;
         TxtCompanyName.Text = model.CompanyInfo.Text;
         TxtCompanySql.Text = model.CompanyInfo.SqlExpression ?? string.Empty;
         TxtCompanyEndpoint.Text = model.CompanyInfo.BackendEndpoint ?? string.Empty;
+        TxtReportVariablesSql.Text = model.ReportVariables.DynamicSource.SqlExpression;
+        ApplyReportVariables(model.ReportVariables.Items);
         ChkMemorandumEnabled.IsChecked = model.Memorandum.Enabled;
         SetReportBandLayoutMode(CmbMemorandumLayoutMode, model.Memorandum.LayoutMode);
         TxtMemorandumSubreport.Text = model.Memorandum.SubreportPath ?? model.Memorandum.SubreportName ?? string.Empty;
@@ -919,6 +945,7 @@ public partial class ReportSetupDialog : Window
         TxtHeaderLeft.Text = model.PageHeader.LeftText;
         TxtHeaderRight.Text = model.PageHeader.RightText;
         TxtPageHeaderHeight.Text = ToUiNumber(model.PageHeader.HeightInCentimeters);
+        ChkPageHeaderFirstPage.IsChecked = model.PageHeader.PrintOnFirstPage;
         ChkPageFooterEnabled.IsChecked = model.PageFooter.Enabled;
         TxtFooterLeft.Text = model.PageFooter.LeftText;
         TxtFooterRight.Text = model.PageFooter.RightText;
@@ -927,6 +954,7 @@ public partial class ReportSetupDialog : Window
         ChkPageFooterTopLine.IsChecked = model.PageFooter.ShowTopLine;
         SetPageFooterDisplayMode(ResolvePageFooterDisplayMode(model.PageFooter));
         TxtPageFooterHeight.Text = ToUiNumber(model.PageFooter.HeightInCentimeters);
+        ChkPageFooterLastPage.IsChecked = model.PageFooter.PrintOnLastPage;
         SetBaseFontFamily(model.BaseFontFamily);
         SetOutputMode(model.OutputMode);
         ApplyPageSetup(model.PageSetup);
@@ -1270,9 +1298,50 @@ public partial class ReportSetupDialog : Window
         GridReportParameters.CommitEdit(DataGridEditingUnit.Row, true);
         GridFields.CommitEdit(DataGridEditingUnit.Cell, true);
         GridFields.CommitEdit(DataGridEditingUnit.Row, true);
+        GridReportVariables.CommitEdit(DataGridEditingUnit.Cell, true);
+        GridReportVariables.CommitEdit(DataGridEditingUnit.Row, true);
         GridMemorandumParagraphs.CommitEdit(DataGridEditingUnit.Cell, true);
         GridMemorandumParagraphs.CommitEdit(DataGridEditingUnit.Row, true);
         NormalizeFieldDrafts();
+    }
+
+    private List<ReportVariableConfig> BuildReportVariablesFromGrid()
+        => this.reportVariables
+            .Where(variable => !string.IsNullOrWhiteSpace(variable.Name))
+            .Select(variable => new ReportVariableConfig
+            {
+                Enabled = variable.Enabled,
+                Name = variable.Name.Trim(),
+                SourceColumnName = NormalizeOptional(variable.SourceColumnName ?? string.Empty),
+                StaticValue = NormalizeOptional(variable.StaticValue ?? string.Empty),
+                FallbackValue = NormalizeOptional(variable.FallbackValue ?? string.Empty)
+            })
+            .ToList();
+
+    private void ApplyReportVariables(IEnumerable<ReportVariableConfig> variables)
+    {
+        this.reportVariables.Clear();
+        foreach (var variable in variables.Where(variable => !string.IsNullOrWhiteSpace(variable.Name)))
+        {
+            this.reportVariables.Add(new ReportVariableConfig
+            {
+                Enabled = variable.Enabled,
+                Name = variable.Name,
+                SourceColumnName = variable.SourceColumnName,
+                StaticValue = variable.StaticValue,
+                FallbackValue = variable.FallbackValue
+            });
+        }
+
+        if (this.reportVariables.Count == 0)
+        {
+            this.reportVariables.Add(new ReportVariableConfig
+            {
+                Name = "CompanyName",
+                SourceColumnName = "CompanyName",
+                FallbackValue = TxtCompanyName.Text.Trim()
+            });
+        }
     }
 
     private List<RichTextParagraphConfig> BuildMemorandumParagraphsFromGrid()

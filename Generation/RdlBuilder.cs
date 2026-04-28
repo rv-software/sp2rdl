@@ -1511,22 +1511,12 @@ internal sealed class RdlBuilder
         var usableWidth = GetUsablePageWidth(model.PageSetup);
         var gap = Math.Min(0.5d, usableWidth / 20d);
         var textboxWidth = Math.Max(1.0d, (usableWidth - gap) / 2d);
-        var leftText = string.IsNullOrWhiteSpace(header.LeftText)
-            && title.Enabled
-            && title.ShowInPageHeaderAfterFirstPage
-            && !string.IsNullOrWhiteSpace(title.Text)
-            ? title.Text
-            : header.LeftText;
+        var leftText = header.LeftText;
         var rightText = header.RightText;
-        var printOnFirstPage = header.PrintOnFirstPage
-            && !(title.Enabled && !string.IsNullOrWhiteSpace(title.Text));
-        var hiddenExpression = title.Enabled && title.ShowInPageHeaderAfterFirstPage && !string.IsNullOrWhiteSpace(title.Text)
-            ? "=Globals!PageNumber = 1"
-            : null;
 
         return new XElement(Rdl + "PageHeader",
             new XElement(Rdl + "Height", ToCentimeters(header.HeightInCentimeters)),
-            new XElement(Rdl + "PrintOnFirstPage", printOnFirstPage.ToString().ToLowerInvariant()),
+            new XElement(Rdl + "PrintOnFirstPage", header.PrintOnFirstPage.ToString().ToLowerInvariant()),
             new XElement(Rdl + "PrintOnLastPage", header.PrintOnLastPage.ToString().ToLowerInvariant()),
             new XElement(Rdl + "ReportItems",
                 BuildPositionedTextbox(
@@ -1537,8 +1527,7 @@ internal sealed class RdlBuilder
                     ToCentimeters(textboxWidth),
                     "0.6cm",
                     "Left",
-                    model.BaseFontFamily,
-                    hiddenExpression: hiddenExpression),
+                    model.BaseFontFamily),
                 BuildPositionedTextbox(
                     "sp2rdlHeaderRight",
                     ResolveTemplateText(rightText, model),
@@ -1633,7 +1622,7 @@ internal sealed class RdlBuilder
         }
 
         var values = model.ReportVariables.Items
-            .Where(variable => !string.IsNullOrWhiteSpace(variable.Name))
+            .Where(variable => variable.Enabled && !string.IsNullOrWhiteSpace(variable.Name))
             .GroupBy(variable => variable.Name, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,

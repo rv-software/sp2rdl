@@ -156,7 +156,6 @@
                     <TextBlock Grid.Row="8" Grid.Column="0" Text="Title options:" Style="{StaticResource LabelText}"/>
                     <StackPanel Grid.Row="8" Grid.Column="1" Orientation="Horizontal">
                         <CheckBox x:Name="ChkReportTitleEnabled" Content="Generate title band" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
-                        <CheckBox x:Name="ChkTitleInHeader" Content="Show in header after first page" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" VerticalAlignment="Center"/>
                     </StackPanel>
 
                     <TextBlock Grid.Row="10" Grid.Column="0" Text="Output mode:" Style="{StaticResource LabelText}"/>
@@ -371,6 +370,56 @@
                 </DataGrid>
             </TabItem>
 
+            <TabItem Header="Report variables">
+                <Grid Margin="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="140"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="120"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Variables SQL:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="TxtReportVariablesSql" Style="{StaticResource FieldBox}" IsReadOnly="True"/>
+                    <Button Grid.Row="0" Grid.Column="3" Content="..." Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="EditReportVariablesSqlButton_Click"/>
+
+                    <DataGrid Grid.Row="2" Grid.ColumnSpan="4" x:Name="GridReportVariables"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="True"
+                              CanUserDeleteRows="True"
+                              Style="{StaticResource ReadableGrid}">
+                        <DataGrid.Columns>
+                            <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="72"/>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="160">
+                                <DataGridTextColumn.EditingElementStyle>
+                                    <Style TargetType="TextBox" BasedOn="{StaticResource ReadableGridTextBox}"/>
+                                </DataGridTextColumn.EditingElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Source column" Binding="{Binding SourceColumnName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="160">
+                                <DataGridTextColumn.EditingElementStyle>
+                                    <Style TargetType="TextBox" BasedOn="{StaticResource ReadableGridTextBox}"/>
+                                </DataGridTextColumn.EditingElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Static value" Binding="{Binding StaticValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="*">
+                                <DataGridTextColumn.EditingElementStyle>
+                                    <Style TargetType="TextBox" BasedOn="{StaticResource ReadableGridTextBox}"/>
+                                </DataGridTextColumn.EditingElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Fallback value" Binding="{Binding FallbackValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="*">
+                                <DataGridTextColumn.EditingElementStyle>
+                                    <Style TargetType="TextBox" BasedOn="{StaticResource ReadableGridTextBox}"/>
+                                </DataGridTextColumn.EditingElementStyle>
+                            </DataGridTextColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
             <TabItem Header="Lookups">
                 <DataGrid x:Name="GridLookups" Margin="16" AutoGenerateColumns="True" Style="{StaticResource ReadableGrid}"/>
             </TabItem>
@@ -417,7 +466,10 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Header:" Style="{StaticResource LabelText}"/>
-                    <CheckBox Grid.Row="0" Grid.Column="1" x:Name="ChkPageHeaderEnabled" Content="Enabled" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" VerticalAlignment="Center"/>
+                    <StackPanel Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
+                        <CheckBox x:Name="ChkPageHeaderEnabled" Content="Enabled" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
+                        <CheckBox x:Name="ChkPageHeaderFirstPage" Content="Show on first page" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="False" VerticalAlignment="Center"/>
+                    </StackPanel>
 
                     <TextBlock Grid.Row="2" Grid.Column="0" Text="Left segment:" Style="{StaticResource LabelText}"/>
                     <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtHeaderLeft" Style="{StaticResource FieldBox}"/>
@@ -433,6 +485,7 @@
                         <CheckBox x:Name="ChkPageFooterEnabled" Content="Enabled" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
                         <CheckBox x:Name="ChkPageFooterNumber" Content="Page number" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
                         <CheckBox x:Name="ChkPageFooterTopLine" Content="Top line" Foreground="{DynamicResource DialogPrimaryTextBrush}" VerticalAlignment="Center"/>
+                        <CheckBox x:Name="ChkPageFooterLastPage" Content="Show on last page" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="18,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
 
                     <TextBlock Grid.Row="10" Grid.Column="0" Text="Display:" Style="{StaticResource LabelText}"/>
