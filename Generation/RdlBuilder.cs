@@ -551,10 +551,9 @@ internal sealed class RdlBuilder
                 ToCentimeters(Math.Max(0.4d, height - 0.25d))));
         }
 
-        reportItems.Add(BuildPositionedRichTextbox(
+        reportItems.Add(BuildPositionedHtmlTextbox(
             "sp2rdlMemorandumText",
-            GetMemorandumParagraphs(model),
-            model,
+            ResolveTemplateText(model.Memorandum.TextTemplate, model),
             ToCentimeters(textLeft),
             "0cm",
             ToCentimeters(textWidth),
@@ -1655,25 +1654,6 @@ internal sealed class RdlBuilder
         return resolved;
     }
 
-    private static List<RichTextParagraphConfig> GetMemorandumParagraphs(ReportModel model)
-    {
-        var paragraphs = model.Memorandum.RichTextParagraphs
-            .Where(paragraph => !string.IsNullOrWhiteSpace(paragraph.Text))
-            .ToList();
-        if (paragraphs.Count > 0)
-        {
-            return paragraphs;
-        }
-
-        return string.IsNullOrWhiteSpace(model.Memorandum.TextTemplate)
-            ? []
-            : model.Memorandum.TextTemplate
-                .Split(["\r\n", "\n"], StringSplitOptions.None)
-                .Where(line => !string.IsNullOrWhiteSpace(line))
-                .Select(line => new RichTextParagraphConfig { Text = line.Trim() })
-                .ToList();
-    }
-
     private static XElement BuildPositionedTextbox(
         string name,
         string value,
@@ -1733,10 +1713,9 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "PaddingTop", "3pt"),
                 new XElement(Rdl + "PaddingBottom", "3pt")));
 
-    private static XElement BuildPositionedRichTextbox(
+    private static XElement BuildPositionedHtmlTextbox(
         string name,
-        IReadOnlyList<RichTextParagraphConfig> paragraphs,
-        ReportModel model,
+        string html,
         string left,
         string top,
         string width,
@@ -1747,9 +1726,16 @@ internal sealed class RdlBuilder
             new XElement(Rdl + "CanGrow", "true"),
             new XElement(Rdl + "KeepTogether", "true"),
             new XElement(Rdl + "Paragraphs",
-                paragraphs.Count == 0
-                    ? [BuildRichParagraph(new RichTextParagraphConfig(), 0, model, fontFamily)]
-                    : paragraphs.Select((paragraph, index) => BuildRichParagraph(paragraph, index, model, fontFamily))),
+                new XElement(Rdl + "Paragraph",
+                    new XElement(Rdl + "TextRuns",
+                        new XElement(Rdl + "TextRun",
+                            new XElement(Rdl + "Value", string.IsNullOrWhiteSpace(html) ? string.Empty : html),
+                            new XElement(Rdl + "MarkupType", "HTML"),
+                            new XElement(Rdl + "Style",
+                                new XElement(Rdl + "FontFamily", fontFamily),
+                                new XElement(Rdl + "FontSize", "9pt")))),
+                    new XElement(Rdl + "Style",
+                        new XElement(Rdl + "TextAlign", "Left")))),
             new XElement(Rdl + "Top", top),
             new XElement(Rdl + "Left", left),
             new XElement(Rdl + "Height", height),
@@ -1761,37 +1747,6 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "PaddingRight", "3pt"),
                 new XElement(Rdl + "PaddingTop", "3pt"),
                 new XElement(Rdl + "PaddingBottom", "3pt")));
-
-    private static XElement BuildRichParagraph(RichTextParagraphConfig paragraph, int index, ReportModel model, string fontFamily)
-    {
-        var text = ResolveTemplateText(paragraph.Text, model);
-        text = paragraph.ListStyle switch
-        {
-            "Bullet" => "- " + text,
-            "Number" => (index + 1).ToString(CultureInfo.InvariantCulture) + ". " + text,
-            _ => text
-        };
-
-        return new XElement(Rdl + "Paragraph",
-            new XElement(Rdl + "TextRuns",
-                new XElement(Rdl + "TextRun",
-                    new XElement(Rdl + "Value", text),
-                    new XElement(Rdl + "Style",
-                        new XElement(Rdl + "FontFamily", fontFamily),
-                        new XElement(Rdl + "FontSize", $"{Math.Max(1.0d, paragraph.FontSizeInPoints).ToString("0.#", CultureInfo.InvariantCulture)}pt"),
-                        paragraph.Bold ? new XElement(Rdl + "FontWeight", "Bold") : null,
-                        paragraph.Italic ? new XElement(Rdl + "FontStyle", "Italic") : null))),
-            new XElement(Rdl + "Style",
-                new XElement(Rdl + "TextAlign", NormalizeTextAlign(paragraph.TextAlign))));
-    }
-
-    private static string NormalizeTextAlign(string? value)
-        => value switch
-        {
-            "Center" => "Center",
-            "Right" => "Right",
-            _ => "Left"
-        };
 
     private static XElement BuildImage(
         string name,

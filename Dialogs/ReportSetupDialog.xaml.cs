@@ -43,8 +43,6 @@ public partial class ReportSetupDialog : Window
     ];
     private static readonly IReadOnlyList<string> CompareOperators = [">=", "<=", ">", "<", "="];
     private static readonly IReadOnlyList<string> AggregateOptions = [string.Empty, "Sum", "Count", "CountDistinct", "Min", "Max", "Avg"];
-    private static readonly IReadOnlyList<string> TextAlignOptions = ["Left", "Center", "Right"];
-    private static readonly IReadOnlyList<string> ListStyleOptions = ["None", "Bullet", "Number"];
     private static readonly IReadOnlyList<Choice<int>> GroupLevels =
     [
         new(0, string.Empty),
@@ -58,7 +56,6 @@ public partial class ReportSetupDialog : Window
     private readonly SqlIntrospector sqlIntrospector;
     private readonly ObservableCollection<DatasetFieldDraft> fieldDrafts = new();
     private readonly ObservableCollection<ReportParameter> reportParameters = new();
-    private readonly ObservableCollection<RichTextParagraphConfig> memorandumParagraphs = new();
     private readonly ObservableCollection<ReportVariableConfig> reportVariables = new();
     private readonly ObservableCollection<Choice<string>> storedProcedureParameterChoices = new();
     private readonly CancellationTokenSource cts = new();
@@ -79,13 +76,10 @@ public partial class ReportSetupDialog : Window
         ColParameterControlType.ItemsSource = Enum.GetValues(typeof(ControlType));
         ColParameterCompareOperator.ItemsSource = CompareOperators;
         ColParameterBindToSpParam.ItemsSource = this.storedProcedureParameterChoices;
-        ColMemorandumAlign.ItemsSource = TextAlignOptions;
-        ColMemorandumListStyle.ItemsSource = ListStyleOptions;
         GridFields.ItemsSource = this.fieldDrafts;
         GridReportParameters.ItemsSource = this.reportParameters;
         GridReportVariables.ItemsSource = this.reportVariables;
-        GridMemorandumParagraphs.ItemsSource = this.memorandumParagraphs;
-        this.memorandumParagraphs.Add(new RichTextParagraphConfig { Text = "{CompanyName}", Bold = true, FontSizeInPoints = 11.0d });
+        TxtMemorandumTemplate.Text = "<b>{CompanyName}</b>";
         GridReportParameters.RowEditEnding += GridReportParameters_RowEditEnding;
         this.Closed += OnClosed;
     }
@@ -450,6 +444,49 @@ public partial class ReportSetupDialog : Window
         {
             TxtReportVariablesSql.Text = dialog.SqlText.Trim();
         }
+    }
+
+    private void MemorandumBoldButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<b>", "</b>");
+
+    private void MemorandumItalicButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<i>", "</i>");
+
+    private void MemorandumUnderlineButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<u>", "</u>");
+
+    private void MemorandumAlignLeftButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<p style=\"text-align:left;\">", "</p>");
+
+    private void MemorandumAlignCenterButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<p style=\"text-align:center;\">", "</p>");
+
+    private void MemorandumAlignRightButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<p style=\"text-align:right;\">", "</p>");
+
+    private void MemorandumBulletButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<ul><li>", "</li></ul>");
+
+    private void MemorandumNumberButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<ol><li>", "</li></ol>");
+
+    private void MemorandumCompanyPlaceholderButton_Click(object sender, RoutedEventArgs e)
+        => InsertMemorandumText("{CompanyName}");
+
+    private void MemorandumReportTitlePlaceholderButton_Click(object sender, RoutedEventArgs e)
+        => InsertMemorandumText("{ReportTitle}");
+
+    private void WrapMemorandumSelection(string before, string after)
+    {
+        var selected = TxtMemorandumTemplate.SelectedText;
+        TxtMemorandumTemplate.SelectedText = before + selected + after;
+        TxtMemorandumTemplate.Focus();
+    }
+
+    private void InsertMemorandumText(string text)
+    {
+        TxtMemorandumTemplate.SelectedText = text;
+        TxtMemorandumTemplate.Focus();
     }
 
     private void DependsOnDropDownButton_Click(object sender, RoutedEventArgs e)
@@ -837,10 +874,8 @@ public partial class ReportSetupDialog : Window
         reportModel.Memorandum.SubreportPath = NormalizeOptional(TxtMemorandumSubreport.Text);
         reportModel.Memorandum.SubreportName = BuildSubreportName(reportModel.Memorandum.SubreportPath);
         reportModel.Memorandum.FallbackToInline = ChkMemorandumFallbackInline.IsChecked == true;
-        reportModel.Memorandum.RichTextParagraphs = BuildMemorandumParagraphsFromGrid();
-        reportModel.Memorandum.TextTemplate = string.Join(
-            Environment.NewLine,
-            reportModel.Memorandum.RichTextParagraphs.Select(paragraph => paragraph.Text));
+        reportModel.Memorandum.RichTextParagraphs.Clear();
+        reportModel.Memorandum.TextTemplate = TxtMemorandumTemplate.Text.Trim();
         reportModel.Memorandum.LogoImagePath = NormalizeOptional(TxtMemorandumLogo.Text);
         reportModel.Memorandum.ShowVerticalSeparator = ChkMemorandumVerticalLine.IsChecked == true;
         reportModel.Memorandum.ShowBottomLine = ChkMemorandumBottomLine.IsChecked == true;
@@ -929,7 +964,9 @@ public partial class ReportSetupDialog : Window
         SetReportBandLayoutMode(CmbMemorandumLayoutMode, model.Memorandum.LayoutMode);
         TxtMemorandumSubreport.Text = model.Memorandum.SubreportPath ?? model.Memorandum.SubreportName ?? string.Empty;
         ChkMemorandumFallbackInline.IsChecked = model.Memorandum.FallbackToInline;
-        ApplyMemorandumParagraphs(model.Memorandum);
+        TxtMemorandumTemplate.Text = string.IsNullOrWhiteSpace(model.Memorandum.TextTemplate)
+            ? "<b>{CompanyName}</b>"
+            : model.Memorandum.TextTemplate;
         TxtMemorandumLogo.Text = model.Memorandum.LogoImagePath ?? string.Empty;
         ChkMemorandumVerticalLine.IsChecked = model.Memorandum.ShowVerticalSeparator;
         ChkMemorandumBottomLine.IsChecked = model.Memorandum.ShowBottomLine;
@@ -1300,8 +1337,6 @@ public partial class ReportSetupDialog : Window
         GridFields.CommitEdit(DataGridEditingUnit.Row, true);
         GridReportVariables.CommitEdit(DataGridEditingUnit.Cell, true);
         GridReportVariables.CommitEdit(DataGridEditingUnit.Row, true);
-        GridMemorandumParagraphs.CommitEdit(DataGridEditingUnit.Cell, true);
-        GridMemorandumParagraphs.CommitEdit(DataGridEditingUnit.Row, true);
         NormalizeFieldDrafts();
     }
 
@@ -1344,64 +1379,6 @@ public partial class ReportSetupDialog : Window
         }
     }
 
-    private List<RichTextParagraphConfig> BuildMemorandumParagraphsFromGrid()
-        => this.memorandumParagraphs
-            .Where(paragraph => !string.IsNullOrWhiteSpace(paragraph.Text))
-            .Select(paragraph => new RichTextParagraphConfig
-            {
-                Text = paragraph.Text.Trim(),
-                TextAlign = NormalizeTextAlign(paragraph.TextAlign),
-                Bold = paragraph.Bold,
-                Italic = paragraph.Italic,
-                FontSizeInPoints = paragraph.FontSizeInPoints > 0 ? paragraph.FontSizeInPoints : 9.0d,
-                ListStyle = NormalizeListStyle(paragraph.ListStyle)
-            })
-            .ToList();
-
-    private void ApplyMemorandumParagraphs(MemorandumConfig memorandum)
-    {
-        this.memorandumParagraphs.Clear();
-        var paragraphs = memorandum.RichTextParagraphs.Count > 0
-            ? memorandum.RichTextParagraphs
-            : BuildParagraphsFromTemplate(memorandum.TextTemplate);
-
-        if (paragraphs.Count == 0)
-        {
-            paragraphs = [new RichTextParagraphConfig { Text = "{CompanyName}", Bold = true, FontSizeInPoints = 11.0d }];
-        }
-
-        foreach (var paragraph in paragraphs)
-        {
-            this.memorandumParagraphs.Add(new RichTextParagraphConfig
-            {
-                Text = paragraph.Text,
-                TextAlign = NormalizeTextAlign(paragraph.TextAlign),
-                Bold = paragraph.Bold,
-                Italic = paragraph.Italic,
-                FontSizeInPoints = paragraph.FontSizeInPoints > 0 ? paragraph.FontSizeInPoints : 9.0d,
-                ListStyle = NormalizeListStyle(paragraph.ListStyle)
-            });
-        }
-    }
-
-    private static List<RichTextParagraphConfig> BuildParagraphsFromTemplate(string template)
-        => string.IsNullOrWhiteSpace(template)
-            ? []
-            : template
-                .Split(["\r\n", "\n"], StringSplitOptions.None)
-                .Where(line => !string.IsNullOrWhiteSpace(line))
-                .Select(line => new RichTextParagraphConfig { Text = line.Trim() })
-                .ToList();
-
-    private static string NormalizeTextAlign(string? value)
-        => TextAlignOptions.Contains(value ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-            ? TextAlignOptions.First(option => string.Equals(option, value, StringComparison.OrdinalIgnoreCase))
-            : "Left";
-
-    private static string NormalizeListStyle(string? value)
-        => ListStyleOptions.Contains(value ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-            ? ListStyleOptions.First(option => string.Equals(option, value, StringComparison.OrdinalIgnoreCase))
-            : "None";
 
     private void NormalizeFieldDrafts()
     {
