@@ -150,14 +150,23 @@
                     <TextBlock Grid.Row="4" Grid.Column="0" Text="Description:" Style="{StaticResource LabelText}"/>
                     <TextBox Grid.Row="4" Grid.Column="1" x:Name="TxtDescription" Style="{StaticResource FieldBox}" Height="90" AcceptsReturn="True" TextWrapping="Wrap"/>
 
-                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Output mode:" Style="{StaticResource LabelText}"/>
-                    <ComboBox Grid.Row="6" Grid.Column="1" x:Name="CmbOutputMode" Style="{StaticResource FieldCombo}" Width="180" HorizontalAlignment="Left" SelectedIndex="0">
+                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Report title:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="6" Grid.Column="1" x:Name="TxtReportTitle" Style="{StaticResource FieldBox}"/>
+
+                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Title options:" Style="{StaticResource LabelText}"/>
+                    <StackPanel Grid.Row="8" Grid.Column="1" Orientation="Horizontal">
+                        <CheckBox x:Name="ChkReportTitleEnabled" Content="Generate title band" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
+                        <CheckBox x:Name="ChkTitleInHeader" Content="Show in header after first page" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Output mode:" Style="{StaticResource LabelText}"/>
+                    <ComboBox Grid.Row="10" Grid.Column="1" x:Name="CmbOutputMode" Style="{StaticResource FieldCombo}" Width="180" HorizontalAlignment="Left" SelectedIndex="0">
                         <ComboBoxItem Content="RDL" Tag="Rdl"/>
                         <ComboBoxItem Content="RDLC" Tag="Rdlc"/>
                     </ComboBox>
 
-                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Page:" Style="{StaticResource LabelText}"/>
-                    <WrapPanel Grid.Row="8" Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock Grid.Row="12" Grid.Column="0" Text="Page:" Style="{StaticResource LabelText}"/>
+                    <WrapPanel Grid.Row="12" Grid.Column="1" VerticalAlignment="Center">
                         <ComboBox x:Name="CmbPageSize" Style="{StaticResource FieldCombo}" Width="90" SelectedIndex="0" Margin="0,0,8,0">
                             <ComboBoxItem Content="A4" Tag="A4"/>
                             <ComboBoxItem Content="A3" Tag="A3"/>
@@ -175,8 +184,8 @@
                         <TextBox x:Name="TxtMarginBottom" Style="{StaticResource FieldBox}" Width="52" Text="1"/>
                     </WrapPanel>
 
-                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Base font:" Style="{StaticResource LabelText}"/>
-                    <ComboBox Grid.Row="10" Grid.Column="1" x:Name="CmbBaseFont" Style="{StaticResource FieldCombo}" Width="260" HorizontalAlignment="Left" IsEditable="True" IsTextSearchEnabled="True"/>
+                    <TextBlock Grid.Row="14" Grid.Column="0" Text="Base font:" Style="{StaticResource LabelText}"/>
+                    <ComboBox Grid.Row="14" Grid.Column="1" x:Name="CmbBaseFont" Style="{StaticResource FieldCombo}" Width="260" HorizontalAlignment="Left" IsEditable="True" IsTextSearchEnabled="True"/>
 
                 </Grid>
             </TabItem>
@@ -372,7 +381,7 @@
                 </Grid>
             </TabItem>
 
-            <TabItem Header="Page footer">
+            <TabItem Header="Page header / Footer">
                 <Grid Margin="16" VerticalAlignment="Top">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="140"/>
@@ -392,34 +401,60 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="10"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="16"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Footer:" Style="{StaticResource LabelText}"/>
-                    <StackPanel Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Header:" Style="{StaticResource LabelText}"/>
+                    <CheckBox Grid.Row="0" Grid.Column="1" x:Name="ChkPageHeaderEnabled" Content="Enabled" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" VerticalAlignment="Center"/>
+
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Left segment:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtHeaderLeft" Style="{StaticResource FieldBox}"/>
+
+                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Right segment:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtHeaderRight" Style="{StaticResource FieldBox}"/>
+
+                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Header height cm:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="6" Grid.Column="1" x:Name="TxtPageHeaderHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
+
+                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Footer:" Style="{StaticResource LabelText}"/>
+                    <StackPanel Grid.Row="8" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
                         <CheckBox x:Name="ChkPageFooterEnabled" Content="Enabled" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
                         <CheckBox x:Name="ChkPageFooterNumber" Content="Page number" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
                         <CheckBox x:Name="ChkPageFooterTopLine" Content="Top line" Foreground="{DynamicResource DialogPrimaryTextBrush}" VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Display:" Style="{StaticResource LabelText}"/>
-                    <ComboBox Grid.Row="2" Grid.Column="1" x:Name="CmbPageFooterDisplayMode" Style="{StaticResource FieldCombo}" Width="220" HorizontalAlignment="Left" SelectedIndex="0">
+                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Display:" Style="{StaticResource LabelText}"/>
+                    <ComboBox Grid.Row="10" Grid.Column="1" x:Name="CmbPageFooterDisplayMode" Style="{StaticResource FieldCombo}" Width="220" HorizontalAlignment="Left" SelectedIndex="0">
                         <ComboBoxItem Content="All pages" Tag="AllPages"/>
                         <ComboBoxItem Content="First page only" Tag="FirstPageOnly"/>
                         <ComboBoxItem Content="Last page only" Tag="LastPageOnly"/>
                         <ComboBoxItem Content="All except first page" Tag="AllExceptFirstPage"/>
                     </ComboBox>
 
-                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Left segment:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtFooterLeft" Style="{StaticResource FieldBox}"/>
+                    <TextBlock Grid.Row="12" Grid.Column="0" Text="Left segment:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="12" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtFooterLeft" Style="{StaticResource FieldBox}"/>
 
-                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Right segment:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtFooterRight" Style="{StaticResource FieldBox}"/>
+                    <TextBlock Grid.Row="14" Grid.Column="0" Text="Right segment:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="14" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtFooterRight" Style="{StaticResource FieldBox}"/>
 
-                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Mini logo:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="8" Grid.Column="1" x:Name="TxtFooterLogo" Style="{StaticResource FieldBox}" Height="34"/>
-                    <Button Grid.Row="8" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseFooterLogoButton_Click"/>
+                    <TextBlock Grid.Row="16" Grid.Column="0" Text="Mini logo:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="16" Grid.Column="1" x:Name="TxtFooterLogo" Style="{StaticResource FieldBox}" Height="34"/>
+                    <Button Grid.Row="16" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseFooterLogoButton_Click"/>
 
-                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="10" Grid.Column="1" x:Name="TxtPageFooterHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
+                    <TextBlock Grid.Row="18" Grid.Column="0" Text="Footer height cm:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="18" Grid.Column="1" x:Name="TxtPageFooterHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
                 </Grid>
             </TabItem>
 
@@ -458,36 +493,24 @@
                         <RowDefinition Height="10"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Report title:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtReportTitle" Style="{StaticResource FieldBox}"/>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Company:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtCompanyName" Style="{StaticResource FieldBox}"/>
 
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Title options:" Style="{StaticResource LabelText}"/>
-                    <StackPanel Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
-                        <CheckBox x:Name="ChkReportTitleEnabled" Content="Generate title band" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
-                        <CheckBox x:Name="ChkTitleInHeader" Content="Show in header after first page" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" VerticalAlignment="Center"/>
-                    </StackPanel>
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Company SQL:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtCompanySql" Style="{StaticResource FieldBox}" Height="58" AcceptsReturn="True" TextWrapping="Wrap"/>
 
-                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Company:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtCompanyName" Style="{StaticResource FieldBox}"/>
+                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Company API:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtCompanyEndpoint" Style="{StaticResource FieldBox}"/>
 
-                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Company SQL:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtCompanySql" Style="{StaticResource FieldBox}" Height="58" AcceptsReturn="True" TextWrapping="Wrap"/>
-
-                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Company API:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="8" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtCompanyEndpoint" Style="{StaticResource FieldBox}"/>
-
-                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Header right:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="10" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtHeaderRight" Style="{StaticResource FieldBox}"/>
-
-                    <TextBlock Grid.Row="12" Grid.Column="0" Text="Memorandum:" Style="{StaticResource LabelText}"/>
-                    <StackPanel Grid.Row="12" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
+                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Memorandum:" Style="{StaticResource LabelText}"/>
+                    <StackPanel Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
                         <CheckBox x:Name="ChkMemorandumEnabled" Content="Enabled" Foreground="{DynamicResource DialogPrimaryTextBrush}" Margin="0,0,18,0" VerticalAlignment="Center"/>
                         <CheckBox x:Name="ChkMemorandumVerticalLine" Content="Vertical line" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
                         <CheckBox x:Name="ChkMemorandumBottomLine" Content="Bottom line" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <TextBlock Grid.Row="14" Grid.Column="0" Text="Layout mode:" Style="{StaticResource LabelText}"/>
-                    <StackPanel Grid.Row="14" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
+                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Layout mode:" Style="{StaticResource LabelText}"/>
+                    <StackPanel Grid.Row="8" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
                         <ComboBox x:Name="CmbMemorandumLayoutMode" Style="{StaticResource FieldCombo}" Width="160" SelectedIndex="0">
                             <ComboBoxItem Content="Inline" Tag="Inline"/>
                             <ComboBoxItem Content="Subreport" Tag="Subreport"/>
@@ -495,12 +518,12 @@
                         <CheckBox x:Name="ChkMemorandumFallbackInline" Content="Fallback to inline" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="18,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <TextBlock Grid.Row="16" Grid.Column="0" Text="Subreport:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="16" Grid.Column="1" x:Name="TxtMemorandumSubreport" Style="{StaticResource FieldBox}" Height="34"/>
-                    <Button Grid.Row="16" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumSubreportButton_Click"/>
+                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Subreport:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="10" Grid.Column="1" x:Name="TxtMemorandumSubreport" Style="{StaticResource FieldBox}" Height="34"/>
+                    <Button Grid.Row="10" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumSubreportButton_Click"/>
 
-                    <TextBlock Grid.Row="18" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
-                    <DataGrid Grid.Row="18" Grid.Column="1" Grid.ColumnSpan="3" x:Name="GridMemorandumParagraphs"
+                    <TextBlock Grid.Row="12" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
+                    <DataGrid Grid.Row="12" Grid.Column="1" Grid.ColumnSpan="3" x:Name="GridMemorandumParagraphs"
                               Height="128"
                               AutoGenerateColumns="False"
                               CanUserAddRows="True"
@@ -520,12 +543,12 @@
                         </DataGrid.Columns>
                     </DataGrid>
 
-                    <TextBlock Grid.Row="20" Grid.Column="0" Text="Logo:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="20" Grid.Column="1" x:Name="TxtMemorandumLogo" Style="{StaticResource FieldBox}" Height="34"/>
-                    <Button Grid.Row="20" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumLogoButton_Click"/>
+                    <TextBlock Grid.Row="14" Grid.Column="0" Text="Logo:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="14" Grid.Column="1" x:Name="TxtMemorandumLogo" Style="{StaticResource FieldBox}" Height="34"/>
+                    <Button Grid.Row="14" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumLogoButton_Click"/>
 
-                    <TextBlock Grid.Row="22" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="22" Grid.Column="1" x:Name="TxtMemorandumHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
+                    <TextBlock Grid.Row="16" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="16" Grid.Column="1" x:Name="TxtMemorandumHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
                 </Grid>
             </TabItem>
 

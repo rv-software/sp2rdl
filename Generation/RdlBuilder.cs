@@ -360,7 +360,7 @@ internal sealed class RdlBuilder
 
         if (model.PageHeader.Enabled)
         {
-            page.AddFirst(BuildPageHeader(model.PageHeader, model.ReportTitle, model.CompanyInfo, model.BaseFontFamily, model.PageSetup));
+            page.AddFirst(BuildPageHeader(model));
         }
 
         if (model.PageFooter.Enabled)
@@ -1504,17 +1504,20 @@ internal sealed class RdlBuilder
         };
     }
 
-    private static XElement BuildPageHeader(PageHeaderConfig header, ReportTitleConfig title, CompanyInfoConfig companyInfo, string baseFontFamily, PageSetupConfig pageSetup)
+    private static XElement BuildPageHeader(ReportModel model)
     {
-        var usableWidth = GetUsablePageWidth(pageSetup);
+        var header = model.PageHeader;
+        var title = model.ReportTitle;
+        var usableWidth = GetUsablePageWidth(model.PageSetup);
         var gap = Math.Min(0.5d, usableWidth / 20d);
         var textboxWidth = Math.Max(1.0d, (usableWidth - gap) / 2d);
-        var leftText = title.Enabled && title.ShowInPageHeaderAfterFirstPage && !string.IsNullOrWhiteSpace(title.Text)
+        var leftText = string.IsNullOrWhiteSpace(header.LeftText)
+            && title.Enabled
+            && title.ShowInPageHeaderAfterFirstPage
+            && !string.IsNullOrWhiteSpace(title.Text)
             ? title.Text
             : header.LeftText;
-        var rightText = !string.IsNullOrWhiteSpace(companyInfo.Text)
-            ? companyInfo.Text
-            : header.RightText;
+        var rightText = header.RightText;
         var printOnFirstPage = header.PrintOnFirstPage
             && !(title.Enabled && !string.IsNullOrWhiteSpace(title.Text));
         var hiddenExpression = title.Enabled && title.ShowInPageHeaderAfterFirstPage && !string.IsNullOrWhiteSpace(title.Text)
@@ -1528,23 +1531,23 @@ internal sealed class RdlBuilder
             new XElement(Rdl + "ReportItems",
                 BuildPositionedTextbox(
                     "sp2rdlHeaderLeft",
-                    leftText,
+                    ResolveTemplateText(leftText, model),
                     "0cm",
                     "0cm",
                     ToCentimeters(textboxWidth),
                     "0.6cm",
                     "Left",
-                    baseFontFamily,
+                    model.BaseFontFamily,
                     hiddenExpression: hiddenExpression),
                 BuildPositionedTextbox(
                     "sp2rdlHeaderRight",
-                    rightText,
+                    ResolveTemplateText(rightText, model),
                     ToCentimeters(textboxWidth + gap),
                     "0cm",
                     ToCentimeters(textboxWidth),
                     "0.6cm",
                     "Right",
-                    baseFontFamily)),
+                    model.BaseFontFamily)),
             new XElement(Rdl + "Style",
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "None"))));
@@ -1649,6 +1652,10 @@ internal sealed class RdlBuilder
         {
             values["CompanyName"] = model.CompanyInfo.Text;
         }
+
+        values["ReportTitle"] = string.IsNullOrWhiteSpace(model.ReportTitle.Text)
+            ? model.Name
+            : model.ReportTitle.Text;
 
         var resolved = template;
         foreach (var item in values)

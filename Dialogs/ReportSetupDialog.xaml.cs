@@ -831,7 +831,10 @@ public partial class ReportSetupDialog : Window
         reportModel.ReportSummary.ShowTopLine = ChkReportSummaryTopLine.IsChecked == true;
         reportModel.ReportSummary.HeightInCentimeters = ReadPositiveDouble(TxtReportSummaryHeight.Text, reportModel.ReportSummary.HeightInCentimeters);
         reportModel.PageSetup = BuildPageSetup();
+        reportModel.PageHeader.Enabled = ChkPageHeaderEnabled.IsChecked == true;
+        reportModel.PageHeader.LeftText = TxtHeaderLeft.Text.Trim();
         reportModel.PageHeader.RightText = TxtHeaderRight.Text.Trim();
+        reportModel.PageHeader.HeightInCentimeters = ReadPositiveDouble(TxtPageHeaderHeight.Text, reportModel.PageHeader.HeightInCentimeters);
         reportModel.PageFooter.Enabled = ChkPageFooterEnabled.IsChecked == true;
         reportModel.PageFooter.LeftText = TxtFooterLeft.Text.Trim();
         reportModel.PageFooter.RightText = TxtFooterRight.Text.Trim();
@@ -912,7 +915,10 @@ public partial class ReportSetupDialog : Window
         TxtReportSummaryTemplate.Text = model.ReportSummary.TextTemplate;
         ChkReportSummaryTopLine.IsChecked = model.ReportSummary.ShowTopLine;
         TxtReportSummaryHeight.Text = ToUiNumber(model.ReportSummary.HeightInCentimeters);
+        ChkPageHeaderEnabled.IsChecked = model.PageHeader.Enabled;
+        TxtHeaderLeft.Text = model.PageHeader.LeftText;
         TxtHeaderRight.Text = model.PageHeader.RightText;
+        TxtPageHeaderHeight.Text = ToUiNumber(model.PageHeader.HeightInCentimeters);
         ChkPageFooterEnabled.IsChecked = model.PageFooter.Enabled;
         TxtFooterLeft.Text = model.PageFooter.LeftText;
         TxtFooterRight.Text = model.PageFooter.RightText;
