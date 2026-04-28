@@ -824,6 +824,7 @@ public partial class ReportSetupDialog : Window
         reportModel.PageHeader.RightText = TxtHeaderRight.Text.Trim();
         reportModel.PageFooter.Enabled = ChkPageFooterEnabled.IsChecked == true;
         reportModel.PageFooter.LeftText = TxtFooterLeft.Text.Trim();
+        reportModel.PageFooter.RightText = TxtFooterRight.Text.Trim();
         reportModel.PageFooter.LogoImagePath = NormalizeOptional(TxtFooterLogo.Text);
         reportModel.PageFooter.ShowPageNumber = ChkPageFooterNumber.IsChecked == true;
         reportModel.PageFooter.ShowTopLine = ChkPageFooterTopLine.IsChecked == true;
@@ -906,6 +907,7 @@ public partial class ReportSetupDialog : Window
         TxtHeaderRight.Text = model.PageHeader.RightText;
         ChkPageFooterEnabled.IsChecked = model.PageFooter.Enabled;
         TxtFooterLeft.Text = model.PageFooter.LeftText;
+        TxtFooterRight.Text = model.PageFooter.RightText;
         TxtFooterLogo.Text = model.PageFooter.LogoImagePath ?? string.Empty;
         ChkPageFooterNumber.IsChecked = model.PageFooter.ShowPageNumber;
         ChkPageFooterTopLine.IsChecked = model.PageFooter.ShowTopLine;

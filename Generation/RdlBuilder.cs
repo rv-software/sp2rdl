@@ -385,6 +385,21 @@ internal sealed class RdlBuilder
         var reportItems = new XElement(Rdl + "ReportItems");
         var currentTop = 0.0d;
 
+        var memorandum = BuildReportBandSubreport(
+            "sp2rdlMemorandumSubreport",
+            model.Memorandum.Enabled,
+            model.Memorandum.LayoutMode,
+            model.Memorandum.SubreportName,
+            model.Memorandum.SubreportPath,
+            usableWidth,
+            currentTop,
+            model.Memorandum.HeightInCentimeters);
+        if (memorandum is not null)
+        {
+            reportItems.Add(memorandum);
+            currentTop += model.Memorandum.HeightInCentimeters;
+        }
+
         if (model.ReportTitle.Enabled && !string.IsNullOrWhiteSpace(model.ReportTitle.Text))
         {
             reportItems.Add(BuildPositionedTextbox(
@@ -434,8 +449,88 @@ internal sealed class RdlBuilder
         }
 
         reportItems.Add(BuildTablix(dataset, usableWidth, currentTop, model.BaseFontFamily));
+        currentTop += EstimateTablixHeight(dataset);
+
+        var reportSummary = BuildReportBandSubreport(
+            "sp2rdlReportSummarySubreport",
+            model.ReportSummary.Enabled,
+            model.ReportSummary.LayoutMode,
+            model.ReportSummary.SubreportName,
+            model.ReportSummary.SubreportPath,
+            usableWidth,
+            currentTop,
+            model.ReportSummary.HeightInCentimeters);
+        if (reportSummary is not null)
+        {
+            reportItems.Add(reportSummary);
+            currentTop += model.ReportSummary.HeightInCentimeters;
+        }
+
         body.AddFirst(reportItems);
         body.SetElementValue(Rdl + "Height", ToCentimeters(Math.Max(2.0d, currentTop + 1.25d)));
+    }
+
+    private static XElement? BuildReportBandSubreport(
+        string name,
+        bool enabled,
+        ReportBandLayoutMode layoutMode,
+        string? subreportName,
+        string? subreportPath,
+        double usableWidth,
+        double top,
+        double height)
+    {
+        if (!enabled || layoutMode != ReportBandLayoutMode.Subreport)
+        {
+            return null;
+        }
+
+        var reportName = !string.IsNullOrWhiteSpace(subreportName)
+            ? subreportName.Trim()
+            : NormalizeSubreportReference(subreportPath);
+        if (string.IsNullOrWhiteSpace(reportName))
+        {
+            return null;
+        }
+
+        return new XElement(Rdl + "Subreport",
+            new XAttribute("Name", name),
+            new XElement(Rdl + "ReportName", reportName),
+            new XElement(Rdl + "Top", ToCentimeters(top)),
+            new XElement(Rdl + "Left", "0cm"),
+            new XElement(Rdl + "Height", ToCentimeters(Math.Max(0.4d, height))),
+            new XElement(Rdl + "Width", ToCentimeters(usableWidth)),
+            new XElement(Rdl + "Style",
+                new XElement(Rdl + "Border",
+                    new XElement(Rdl + "Style", "None"))));
+    }
+
+    private static string? NormalizeSubreportReference(string? subreportPath)
+    {
+        if (string.IsNullOrWhiteSpace(subreportPath))
+        {
+            return null;
+        }
+
+        var value = subreportPath.Trim();
+        var extension = Path.GetExtension(value);
+        return string.IsNullOrWhiteSpace(extension)
+            ? value
+            : Path.GetFileNameWithoutExtension(value);
+    }
+
+    private static double EstimateTablixHeight(DatasetConfig dataset)
+    {
+        var fields = dataset.Fields
+            .OrderBy(field => field.OrdinalPosition <= 0 ? int.MaxValue : field.OrdinalPosition)
+            .ThenBy(field => field.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var groups = GetTablixGroups(fields);
+        var aggregateFields = fields
+            .Where(field => !string.IsNullOrWhiteSpace(field.AggregateFunction))
+            .ToList();
+        var rowCount = 1 + groups.Count * 2 + 1 + groups.Count + (aggregateFields.Count > 0 ? 1 : 0);
+        return Math.Max(1.25d, rowCount * 0.6d);
     }
 
     private static XElement BuildTablix(DatasetConfig dataset, double usableWidth, double top, string baseFontFamily)
@@ -1317,13 +1412,14 @@ internal sealed class RdlBuilder
     private static XElement BuildPageFooter(PageFooterConfig footer, string baseFontFamily, PageSetupConfig pageSetup)
     {
         var usableWidth = GetUsablePageWidth(pageSetup);
-        var pageNumberWidth = Math.Min(5.5d, usableWidth);
-        var pageNumberLeft = Math.Max(0.0d, usableWidth - pageNumberWidth);
         var gap = Math.Min(0.4d, usableWidth / 25d);
         var hasLogo = !string.IsNullOrWhiteSpace(footer.LogoImagePath) && File.Exists(footer.LogoImagePath);
         var logoWidth = hasLogo ? 0.8d : 0.0d;
         var leftTextLeft = logoWidth > 0 ? logoWidth + gap : 0.0d;
-        var leftTextWidth = Math.Max(1.0d, pageNumberLeft - leftTextLeft - gap);
+        var rightTextValue = BuildFooterRightValue(footer);
+        var rightTextWidth = Math.Min(5.5d, usableWidth);
+        var rightTextLeft = Math.Max(0.0d, usableWidth - rightTextWidth);
+        var leftTextWidth = Math.Max(1.0d, rightTextLeft - leftTextLeft - gap);
 
         return new XElement(Rdl + "PageFooter",
             new XElement(Rdl + "Height", ToCentimeters(footer.HeightInCentimeters)),
@@ -1344,20 +1440,33 @@ internal sealed class RdlBuilder
                         "0.6cm",
                         "Left",
                         baseFontFamily),
-                footer.ShowPageNumber
-                    ? BuildPositionedTextbox(
-                        "sp2rdlFooterPageNumber",
-                        "=\"Page \" & Globals!PageNumber & \" of \" & Globals!TotalPages",
-                        ToCentimeters(pageNumberLeft),
+                string.IsNullOrWhiteSpace(rightTextValue)
+                    ? null
+                    : BuildPositionedTextbox(
+                        "sp2rdlFooterRight",
+                        rightTextValue,
+                        ToCentimeters(rightTextLeft),
                         "0cm",
-                        ToCentimeters(pageNumberWidth),
+                        ToCentimeters(rightTextWidth),
                         "0.6cm",
                         "Right",
-                        baseFontFamily)
-                    : null),
+                        baseFontFamily)),
             new XElement(Rdl + "Style",
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "None"))));
+    }
+
+    private static string BuildFooterRightValue(PageFooterConfig footer)
+    {
+        var pageNumberExpression = "\"Page \" & Globals!PageNumber & \" of \" & Globals!TotalPages";
+        if (string.IsNullOrWhiteSpace(footer.RightText))
+        {
+            return footer.ShowPageNumber ? "=" + pageNumberExpression : string.Empty;
+        }
+
+        return footer.ShowPageNumber
+            ? "=" + QuoteExpressionText(footer.RightText.Trim() + "   ") + " & " + pageNumberExpression
+            : footer.RightText.Trim();
     }
 
     private static XElement BuildPositionedTextbox(

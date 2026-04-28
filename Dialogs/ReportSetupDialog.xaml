@@ -360,6 +360,57 @@
                 </Grid>
             </TabItem>
 
+            <TabItem Header="Page footer">
+                <Grid Margin="16" VerticalAlignment="Top">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="140"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="120"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Footer:" Style="{StaticResource LabelText}"/>
+                    <StackPanel Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
+                        <CheckBox x:Name="ChkPageFooterEnabled" Content="Enabled" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
+                        <CheckBox x:Name="ChkPageFooterNumber" Content="Page number" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
+                        <CheckBox x:Name="ChkPageFooterTopLine" Content="Top line" Foreground="{DynamicResource DialogPrimaryTextBrush}" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Display:" Style="{StaticResource LabelText}"/>
+                    <ComboBox Grid.Row="2" Grid.Column="1" x:Name="CmbPageFooterDisplayMode" Style="{StaticResource FieldCombo}" Width="220" HorizontalAlignment="Left" SelectedIndex="0">
+                        <ComboBoxItem Content="All pages" Tag="AllPages"/>
+                        <ComboBoxItem Content="First page only" Tag="FirstPageOnly"/>
+                        <ComboBoxItem Content="Last page only" Tag="LastPageOnly"/>
+                        <ComboBoxItem Content="All except first page" Tag="AllExceptFirstPage"/>
+                    </ComboBox>
+
+                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Left segment:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtFooterLeft" Style="{StaticResource FieldBox}"/>
+
+                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Right segment:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtFooterRight" Style="{StaticResource FieldBox}"/>
+
+                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Mini logo:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="8" Grid.Column="1" x:Name="TxtFooterLogo" Style="{StaticResource FieldBox}" Height="34"/>
+                    <Button Grid.Row="8" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseFooterLogoButton_Click"/>
+
+                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="10" Grid.Column="1" x:Name="TxtPageFooterHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
+                </Grid>
+            </TabItem>
+
             <TabItem Header="Memorandum">
                 <Grid Margin="16" VerticalAlignment="Top">
                     <Grid.ColumnDefinitions>
@@ -490,52 +541,6 @@
 
                     <TextBlock Grid.Row="8" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
                     <TextBox Grid.Row="8" Grid.Column="1" x:Name="TxtReportSummaryHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
-                </Grid>
-            </TabItem>
-
-            <TabItem Header="Page footer">
-                <Grid Margin="16" VerticalAlignment="Top">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="140"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="12"/>
-                        <ColumnDefinition Width="120"/>
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="10"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="10"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="10"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="10"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Footer:" Style="{StaticResource LabelText}"/>
-                    <StackPanel Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Orientation="Horizontal">
-                        <CheckBox x:Name="ChkPageFooterEnabled" Content="Enabled" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
-                        <CheckBox x:Name="ChkPageFooterNumber" Content="Page number" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
-                        <CheckBox x:Name="ChkPageFooterTopLine" Content="Top line" Foreground="{DynamicResource DialogPrimaryTextBrush}" VerticalAlignment="Center"/>
-                    </StackPanel>
-
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Display:" Style="{StaticResource LabelText}"/>
-                    <ComboBox Grid.Row="2" Grid.Column="1" x:Name="CmbPageFooterDisplayMode" Style="{StaticResource FieldCombo}" Width="220" HorizontalAlignment="Left" SelectedIndex="0">
-                        <ComboBoxItem Content="All pages" Tag="AllPages"/>
-                        <ComboBoxItem Content="First page only" Tag="FirstPageOnly"/>
-                        <ComboBoxItem Content="Last page only" Tag="LastPageOnly"/>
-                        <ComboBoxItem Content="All except first page" Tag="AllExceptFirstPage"/>
-                    </ComboBox>
-
-                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Footer text:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtFooterLeft" Style="{StaticResource FieldBox}"/>
-
-                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Mini logo:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="6" Grid.Column="1" x:Name="TxtFooterLogo" Style="{StaticResource FieldBox}" Height="34"/>
-                    <Button Grid.Row="6" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseFooterLogoButton_Click"/>
-
-                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="8" Grid.Column="1" x:Name="TxtPageFooterHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
                 </Grid>
             </TabItem>
 
