@@ -241,6 +241,9 @@ public partial class ReportSetupDialog : Window
     }
 
     private void LoadStateButton_Click(object sender, RoutedEventArgs e)
+        => _ = LoadStateAsync();
+
+    private async Task LoadStateAsync()
     {
         try
         {
@@ -257,6 +260,7 @@ public partial class ReportSetupDialog : Window
             }
 
             ApplyReportModel(SpRdlJsonStore.Load(dialog.FileName));
+            await RefreshReportVariablePreviewAsync(force: true);
         }
         catch (Exception ex)
         {
@@ -475,6 +479,7 @@ public partial class ReportSetupDialog : Window
         if (dialog.ShowDialog() == true)
         {
             TxtReportVariablesSql.Text = dialog.SqlText.Trim();
+            this.reportVariablePreviewValues.Clear();
         }
     }
 
@@ -520,9 +525,9 @@ public partial class ReportSetupDialog : Window
         }
     }
 
-    private async Task RefreshReportVariablePreviewAsync()
+    private async Task RefreshReportVariablePreviewAsync(bool force = false)
     {
-        if (ChkMemorandumPreview.IsChecked != true && ChkReportSummaryPreview.IsChecked != true)
+        if (!force && ChkMemorandumPreview.IsChecked != true && ChkReportSummaryPreview.IsChecked != true)
         {
             return;
         }
