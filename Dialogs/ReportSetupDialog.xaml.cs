@@ -70,6 +70,7 @@ public partial class ReportSetupDialog : Window
     private readonly ObservableCollection<ReportParameter> reportParameters = new();
     private readonly ObservableCollection<ReportVariableConfig> reportVariables = new();
     private readonly ObservableCollection<Choice<string>> storedProcedureParameterChoices = new();
+    private readonly Dictionary<string, string?> reportVariablePreviewValues = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource cts = new();
     private StoredProcedureMetadata? currentMetadata;
 
@@ -498,6 +499,8 @@ public partial class ReportSetupDialog : Window
                 TxtReportVariablesSql.Text.Trim(),
                 this.cts.Token);
             var added = MergeReportVariablesFromColumns(preview.Columns);
+            UpdateReportVariablePreviewValues(preview);
+            RefreshVisibleTemplatePreviews();
 
             MessageBox.Show(
                 this,
@@ -553,6 +556,41 @@ public partial class ReportSetupDialog : Window
         }
 
         return added;
+    }
+
+    private void UpdateReportVariablePreviewValues(DataTable preview)
+    {
+        this.reportVariablePreviewValues.Clear();
+        if (preview.Rows.Count == 0)
+        {
+            return;
+        }
+
+        var row = preview.Rows[0];
+        foreach (DataColumn column in preview.Columns)
+        {
+            var columnName = column.ColumnName?.Trim();
+            if (string.IsNullOrWhiteSpace(columnName))
+            {
+                continue;
+            }
+
+            var value = row[column] is DBNull ? null : Convert.ToString(row[column], CultureInfo.CurrentCulture);
+            this.reportVariablePreviewValues[columnName] = value;
+        }
+    }
+
+    private void RefreshVisibleTemplatePreviews()
+    {
+        if (ChkMemorandumPreview.IsChecked == true)
+        {
+            UpdateTemplatePreview(TxtMemorandumTemplate, BrowserMemorandumPreview);
+        }
+
+        if (ChkReportSummaryPreview.IsChecked == true)
+        {
+            UpdateTemplatePreview(TxtReportSummaryTemplate, BrowserReportSummaryPreview);
+        }
     }
 
     private void InitializeTemplateContextMenus()
@@ -735,7 +773,11 @@ public partial class ReportSetupDialog : Window
         var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         foreach (var variable in this.reportVariables.Where(variable => variable.Enabled && !string.IsNullOrWhiteSpace(variable.Name)))
         {
-            values[variable.Name.Trim()] = FirstNonBlank(variable.StaticValue, variable.FallbackValue);
+            var sourceValue = !string.IsNullOrWhiteSpace(variable.SourceColumnName)
+                && this.reportVariablePreviewValues.TryGetValue(variable.SourceColumnName.Trim(), out var previewValue)
+                    ? previewValue
+                    : null;
+            values[variable.Name.Trim()] = FirstNonBlank(variable.StaticValue, sourceValue, variable.FallbackValue);
         }
 
         values["CompanyName"] = FirstNonBlank(values.TryGetValue("CompanyName", out var companyValue) ? companyValue : null, TxtCompanyName.Text.Trim());
