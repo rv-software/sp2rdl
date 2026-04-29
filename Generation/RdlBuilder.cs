@@ -530,6 +530,9 @@ internal sealed class RdlBuilder
                 model.Memorandum.LayoutMode,
                 model.Memorandum.SubreportName,
                 model.Memorandum.SubreportPath,
+                model.Memorandum.SubreportParameterMappings,
+                model.Memorandum.AutoMapSubreportParameters,
+                model,
                 usableWidth,
                 top,
                 model.Memorandum.HeightInCentimeters);
@@ -557,6 +560,9 @@ internal sealed class RdlBuilder
                 model.ReportSummary.LayoutMode,
                 model.ReportSummary.SubreportName,
                 model.ReportSummary.SubreportPath,
+                model.ReportSummary.SubreportParameterMappings,
+                model.ReportSummary.AutoMapSubreportParameters,
+                model,
                 usableWidth,
                 top,
                 model.ReportSummary.HeightInCentimeters);
@@ -668,6 +674,9 @@ internal sealed class RdlBuilder
         ReportBandLayoutMode layoutMode,
         string? subreportName,
         string? subreportPath,
+        IReadOnlyList<SubreportParameterMapping> parameterMappings,
+        bool autoMapParameters,
+        ReportModel model,
         double usableWidth,
         double top,
         double height)
@@ -688,6 +697,7 @@ internal sealed class RdlBuilder
         return new XElement(Rdl + "Subreport",
             new XAttribute("Name", name),
             new XElement(Rdl + "ReportName", reportName),
+            BuildSubreportParameters(parameterMappings, autoMapParameters, model),
             new XElement(Rdl + "Top", ToCentimeters(top)),
             new XElement(Rdl + "Left", "0cm"),
             new XElement(Rdl + "Height", ToCentimeters(Math.Max(0.4d, height))),
@@ -696,6 +706,56 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "None"))));
     }
+
+    private static XElement? BuildSubreportParameters(
+        IReadOnlyList<SubreportParameterMapping> parameterMappings,
+        bool autoMapParameters,
+        ReportModel model)
+    {
+        var mappings = parameterMappings
+            .Where(mapping => !string.IsNullOrWhiteSpace(mapping.SubreportParameterName))
+            .ToList();
+
+        if (mappings.Count == 0 && autoMapParameters)
+        {
+            mappings = model.Parameters
+                .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
+                .Select(parameter => new SubreportParameterMapping
+                {
+                    SubreportParameterName = parameter.Name.TrimStart('@'),
+                    SourceKind = SubreportParameterSourceKind.ReportParameter,
+                    SourceName = parameter.Name.TrimStart('@')
+                })
+                .ToList();
+        }
+
+        if (mappings.Count == 0)
+        {
+            return null;
+        }
+
+        return new XElement(Rdl + "Parameters",
+            mappings.Select(mapping =>
+                new XElement(Rdl + "Parameter",
+                    new XAttribute("Name", mapping.SubreportParameterName.TrimStart('@')),
+                    new XElement(Rdl + "Value", BuildSubreportParameterValue(mapping, model)))));
+    }
+
+    private static string BuildSubreportParameterValue(SubreportParameterMapping mapping, ReportModel model)
+        => mapping.SourceKind switch
+        {
+            SubreportParameterSourceKind.ReportParameter when !string.IsNullOrWhiteSpace(mapping.SourceName)
+                => $"=Parameters!{mapping.SourceName.TrimStart('@')}.Value",
+            SubreportParameterSourceKind.ReportVariable when !string.IsNullOrWhiteSpace(mapping.SourceName)
+                => BuildTemplateExpression("{" + mapping.SourceName.Trim() + "}", model),
+            SubreportParameterSourceKind.Expression when !string.IsNullOrWhiteSpace(mapping.Expression)
+                => mapping.Expression.Trim().StartsWith("=", StringComparison.Ordinal)
+                    ? mapping.Expression.Trim()
+                    : "=" + mapping.Expression.Trim(),
+            SubreportParameterSourceKind.StaticValue
+                => mapping.StaticValue ?? string.Empty,
+            _ => string.Empty
+        };
 
     private static string? NormalizeSubreportReference(string? subreportPath)
     {

@@ -10,6 +10,10 @@ internal sealed class MemorandumConfig
 
     public string? SubreportName { get; set; }
 
+    public bool AutoMapSubreportParameters { get; set; } = true;
+
+    public List<SubreportParameterMapping> SubreportParameterMappings { get; set; } = new();
+
     public bool FallbackToInline { get; set; } = true;
 
     public string? LogoImagePath { get; set; }
