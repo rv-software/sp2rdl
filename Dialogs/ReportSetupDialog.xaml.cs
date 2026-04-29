@@ -1533,8 +1533,16 @@ public partial class ReportSetupDialog : Window
             variables.Items.Add(item);
         }
 
-        item.SourceColumnName = sourceColumnName;
-        item.FallbackValue = fallbackValue;
+        if (string.IsNullOrWhiteSpace(item.SourceColumnName))
+        {
+            item.SourceColumnName = sourceColumnName;
+        }
+
+        if (string.IsNullOrWhiteSpace(item.FallbackValue))
+        {
+            item.FallbackValue = fallbackValue;
+        }
+
         if (string.IsNullOrWhiteSpace(item.StaticValue) && string.IsNullOrWhiteSpace(sourceColumnName))
         {
             item.StaticValue = fallbackValue;
