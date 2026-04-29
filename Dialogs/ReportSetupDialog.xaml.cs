@@ -92,6 +92,7 @@ public partial class ReportSetupDialog : Window
         GridReportParameters.ItemsSource = this.reportParameters;
         GridReportVariables.ItemsSource = this.reportVariables;
         TxtMemorandumTemplate.Text = "<b>{CompanyName}</b>";
+        InitializeTemplateContextMenus();
         GridReportParameters.RowEditEnding += GridReportParameters_RowEditEnding;
         this.Closed += OnClosed;
     }
@@ -554,6 +555,12 @@ public partial class ReportSetupDialog : Window
         return added;
     }
 
+    private void InitializeTemplateContextMenus()
+    {
+        TxtMemorandumTemplate.ContextMenu = BuildTemplateContextMenu(TxtMemorandumTemplate);
+        TxtReportSummaryTemplate.ContextMenu = BuildTemplateContextMenu(TxtReportSummaryTemplate);
+    }
+
     private void MemorandumBoldButton_Click(object sender, RoutedEventArgs e)
         => WrapMemorandumSelection("<b>", "</b>");
 
@@ -749,35 +756,56 @@ public partial class ReportSetupDialog : Window
             return;
         }
 
-        var variables = GetAvailablePlaceholderNames().ToList();
-        if (variables.Count == 0)
-        {
-            e.Handled = true;
-            return;
-        }
-
-        var menu = new ContextMenu();
-        foreach (var variable in variables)
-        {
-            var menuItem = new MenuItem { Header = "{" + variable + "}" };
-            menuItem.Click += (_, _) =>
-            {
-                textBox.SelectedText = "{" + variable + "}";
-                textBox.Focus();
-            };
-            menu.Items.Add(menuItem);
-        }
-
-        textBox.ContextMenu = menu;
+        textBox.ContextMenu = BuildTemplateContextMenu(textBox);
     }
 
-    private IEnumerable<string> GetAvailablePlaceholderNames()
-        => this.reportVariables
+    private ContextMenu BuildTemplateContextMenu(TextBox textBox)
+    {
+        var menu = new ContextMenu();
+        var systemPlaceholders = new[] { "CompanyName", "ReportTitle" };
+        var reportVariables = this.reportVariables
             .Where(variable => variable.Enabled && !string.IsNullOrWhiteSpace(variable.Name))
             .Select(variable => variable.Name.Trim())
-            .Concat(["CompanyName", "ReportTitle"])
+            .Where(variable => !systemPlaceholders.Contains(variable, StringComparer.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase);
+            .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        var systemMenu = new MenuItem { Header = "System placeholders" };
+        foreach (var placeholder in systemPlaceholders)
+        {
+            systemMenu.Items.Add(BuildTemplatePlaceholderMenuItem(textBox, placeholder));
+        }
+
+        menu.Items.Add(systemMenu);
+
+        var variablesMenu = new MenuItem { Header = "Report variables" };
+        if (reportVariables.Count == 0)
+        {
+            variablesMenu.Items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
+        }
+        else
+        {
+            foreach (var variable in reportVariables)
+            {
+                variablesMenu.Items.Add(BuildTemplatePlaceholderMenuItem(textBox, variable));
+            }
+        }
+
+        menu.Items.Add(variablesMenu);
+        return menu;
+    }
+
+    private static MenuItem BuildTemplatePlaceholderMenuItem(TextBox textBox, string placeholder)
+    {
+        var menuItem = new MenuItem { Header = "{" + placeholder + "}" };
+        menuItem.Click += (_, _) =>
+        {
+            textBox.SelectedText = "{" + placeholder + "}";
+            textBox.Focus();
+        };
+        return menuItem;
+    }
 
     private void DependsOnDropDownButton_Click(object sender, RoutedEventArgs e)
     {
