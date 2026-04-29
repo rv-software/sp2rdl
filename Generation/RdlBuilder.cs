@@ -36,7 +36,7 @@ internal sealed class RdlBuilder
         ValidateParameterDependencies(model);
 
         ReplaceTopLevelElement(report, BuildDataSources(model));
-        ReplaceTopLevelElement(report, BuildDataSets(model));
+        ReplaceOptionalTopLevelElement(report, Rdl + "DataSets", BuildDataSets(model));
         var embeddedImages = BuildEmbeddedImages(model);
         if (embeddedImages is not null)
         {
@@ -130,13 +130,18 @@ internal sealed class RdlBuilder
         return (connectionString, false, "None");
     }
 
-    private static XElement BuildDataSets(ReportModel model)
+    private static XElement? BuildDataSets(ReportModel model)
     {
         var datasets = model.Datasets.ToList();
         var reportVariablesDataset = BuildReportVariablesDataset(model);
         if (reportVariablesDataset is not null)
         {
             datasets.Add(reportVariablesDataset);
+        }
+
+        if (datasets.Count == 0)
+        {
+            return null;
         }
 
         return new XElement(Rdl + "DataSets",
@@ -2102,6 +2107,15 @@ internal sealed class RdlBuilder
         else
         {
             insertBefore.AddBeforeSelf(replacement);
+        }
+    }
+
+    private static void ReplaceOptionalTopLevelElement(XElement report, XName name, XElement? replacement)
+    {
+        report.Element(name)?.Remove();
+        if (replacement is not null)
+        {
+            ReplaceTopLevelElement(report, replacement);
         }
     }
 
