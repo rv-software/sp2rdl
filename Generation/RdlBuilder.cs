@@ -531,7 +531,6 @@ internal sealed class RdlBuilder
                 model.Memorandum.SubreportName,
                 model.Memorandum.SubreportPath,
                 model.Memorandum.SubreportParameterMappings,
-                model.Memorandum.AutoMapSubreportParameters,
                 model,
                 usableWidth,
                 top,
@@ -561,7 +560,6 @@ internal sealed class RdlBuilder
                 model.ReportSummary.SubreportName,
                 model.ReportSummary.SubreportPath,
                 model.ReportSummary.SubreportParameterMappings,
-                model.ReportSummary.AutoMapSubreportParameters,
                 model,
                 usableWidth,
                 top,
@@ -675,7 +673,6 @@ internal sealed class RdlBuilder
         string? subreportName,
         string? subreportPath,
         IReadOnlyList<SubreportParameterMapping> parameterMappings,
-        bool autoMapParameters,
         ReportModel model,
         double usableWidth,
         double top,
@@ -697,7 +694,7 @@ internal sealed class RdlBuilder
         return new XElement(Rdl + "Subreport",
             new XAttribute("Name", name),
             new XElement(Rdl + "ReportName", reportName),
-            BuildSubreportParameters(parameterMappings, autoMapParameters, model),
+            BuildSubreportParameters(parameterMappings, model),
             new XElement(Rdl + "Top", ToCentimeters(top)),
             new XElement(Rdl + "Left", "0cm"),
             new XElement(Rdl + "Height", ToCentimeters(Math.Max(0.4d, height))),
@@ -709,25 +706,20 @@ internal sealed class RdlBuilder
 
     private static XElement? BuildSubreportParameters(
         IReadOnlyList<SubreportParameterMapping> parameterMappings,
-        bool autoMapParameters,
         ReportModel model)
     {
-        var mappings = parameterMappings
-            .Where(mapping => !string.IsNullOrWhiteSpace(mapping.SubreportParameterName))
+        var mappings = model.Parameters
+            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
+            .Select(parameter => new SubreportParameterMapping
+            {
+                SubreportParameterName = parameter.Name.TrimStart('@'),
+                SourceKind = SubreportParameterSourceKind.ReportParameter,
+                SourceName = parameter.Name.TrimStart('@')
+            })
+            .Concat(parameterMappings.Where(mapping => !string.IsNullOrWhiteSpace(mapping.SubreportParameterName)))
+            .GroupBy(mapping => mapping.SubreportParameterName.TrimStart('@'), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last())
             .ToList();
-
-        if (mappings.Count == 0 && autoMapParameters)
-        {
-            mappings = model.Parameters
-                .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
-                .Select(parameter => new SubreportParameterMapping
-                {
-                    SubreportParameterName = parameter.Name.TrimStart('@'),
-                    SourceKind = SubreportParameterSourceKind.ReportParameter,
-                    SourceName = parameter.Name.TrimStart('@')
-                })
-                .ToList();
-        }
 
         if (mappings.Count == 0)
         {
