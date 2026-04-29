@@ -388,13 +388,16 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="12"/>
                         <ColumnDefinition Width="120"/>
+                        <ColumnDefinition Width="8"/>
+                        <ColumnDefinition Width="170"/>
                     </Grid.ColumnDefinitions>
 
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Variables SQL:" Style="{StaticResource LabelText}"/>
                     <TextBox Grid.Row="0" Grid.Column="1" x:Name="TxtReportVariablesSql" Style="{StaticResource FieldBox}" IsReadOnly="True"/>
                     <Button Grid.Row="0" Grid.Column="3" Content="..." Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="EditReportVariablesSqlButton_Click"/>
+                    <Button Grid.Row="0" Grid.Column="5" Content="Generate variables" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="GenerateReportVariablesButton_Click"/>
 
-                    <DataGrid Grid.Row="2" Grid.ColumnSpan="4" x:Name="GridReportVariables"
+                    <DataGrid Grid.Row="2" Grid.ColumnSpan="6" x:Name="GridReportVariables"
                               AutoGenerateColumns="False"
                               CanUserAddRows="True"
                               CanUserDeleteRows="True"

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Data;
 using System.Data.SqlClient;
 using System.Globalization;
 using System.IO;
@@ -467,6 +468,90 @@ public partial class ReportSetupDialog : Window
         {
             TxtReportVariablesSql.Text = dialog.SqlText.Trim();
         }
+    }
+
+    private void GenerateReportVariablesButton_Click(object sender, RoutedEventArgs e)
+        => _ = GenerateReportVariablesFromSqlAsync();
+
+    private async Task GenerateReportVariablesFromSqlAsync()
+    {
+        CommitPendingGridEdits();
+
+        if (string.IsNullOrWhiteSpace(TxtReportVariablesSql.Text))
+        {
+            MessageBox.Show(this, "Report variables SQL is required.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(TxtConnectionString.Text))
+        {
+            MessageBox.Show(this, "Connection string is required to inspect report variables SQL.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            Cursor = System.Windows.Input.Cursors.Wait;
+            var preview = await this.sqlIntrospector.PreviewSqlAsync(
+                TxtConnectionString.Text.Trim(),
+                TxtReportVariablesSql.Text.Trim(),
+                this.cts.Token);
+            var added = MergeReportVariablesFromColumns(preview.Columns);
+
+            MessageBox.Show(
+                this,
+                added == 0
+                    ? "No new report variables were added. Existing variables were preserved."
+                    : $"Report variables generated. Added: {added}.",
+                "sp2rdlGenExtension",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not generate report variables from SQL:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            Cursor = null;
+        }
+    }
+
+    private int MergeReportVariablesFromColumns(DataColumnCollection columns)
+    {
+        var added = 0;
+        foreach (DataColumn column in columns)
+        {
+            var columnName = column.ColumnName?.Trim();
+            if (string.IsNullOrWhiteSpace(columnName))
+            {
+                continue;
+            }
+
+            var existing = this.reportVariables.FirstOrDefault(variable =>
+                string.Equals(variable.Name, columnName, StringComparison.OrdinalIgnoreCase));
+            if (existing is null)
+            {
+                this.reportVariables.Add(new ReportVariableConfig
+                {
+                    Enabled = true,
+                    Name = columnName,
+                    SourceColumnName = columnName
+                });
+                added++;
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(existing.SourceColumnName))
+            {
+                existing.SourceColumnName = columnName;
+            }
+        }
+
+        return added;
     }
 
     private void MemorandumBoldButton_Click(object sender, RoutedEventArgs e)
