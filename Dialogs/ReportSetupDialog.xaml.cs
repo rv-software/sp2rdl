@@ -726,10 +726,10 @@ public partial class ReportSetupDialog : Window
     {
         if (enabled)
         {
-            await RefreshReportVariablePreviewAsync();
-            UpdateTemplatePreview(editor, preview);
             editor.Visibility = Visibility.Collapsed;
             preview.Visibility = Visibility.Visible;
+            await RefreshReportVariablePreviewAsync();
+            UpdateTemplatePreview(editor, preview);
             return;
         }
 
