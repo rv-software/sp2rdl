@@ -12,6 +12,8 @@ internal sealed class ReportModel
 
     public OutputMode OutputMode { get; set; } = OutputMode.Rdl;
 
+    public ReportPurpose Purpose { get; set; } = ReportPurpose.MainReport;
+
     public string? SourceConnectionString { get; set; }
 
     public string? SourceStoredProcedureName { get; set; }

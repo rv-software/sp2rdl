@@ -446,6 +446,26 @@ internal sealed class RdlBuilder
         var reportItems = new XElement(Rdl + "ReportItems");
         var currentTop = 0.0d;
 
+        if (model.Purpose == ReportPurpose.MemorandumSubreport)
+        {
+            AddSubreportOnlyBand(
+                reportItems,
+                BuildInlineMemorandum(model, usableWidth, currentTop),
+                body,
+                model.Memorandum.HeightInCentimeters);
+            return;
+        }
+
+        if (model.Purpose == ReportPurpose.ReportSummarySubreport)
+        {
+            AddSubreportOnlyBand(
+                reportItems,
+                BuildInlineReportSummary(model, usableWidth, currentTop),
+                body,
+                model.ReportSummary.HeightInCentimeters);
+            return;
+        }
+
         var memorandum = BuildMemorandumBand(model, usableWidth, currentTop);
         if (memorandum is not null)
         {
@@ -513,6 +533,13 @@ internal sealed class RdlBuilder
 
         body.AddFirst(reportItems);
         body.SetElementValue(Rdl + "Height", ToCentimeters(Math.Max(2.0d, currentTop + 1.25d)));
+    }
+
+    private static void AddSubreportOnlyBand(XElement reportItems, XElement band, XElement body, double bandHeight)
+    {
+        reportItems.Add(band);
+        body.AddFirst(reportItems);
+        body.SetElementValue(Rdl + "Height", ToCentimeters(Math.Max(0.8d, bandHeight + 0.15d)));
     }
 
     private static XElement? BuildMemorandumBand(ReportModel model, double usableWidth, double top)

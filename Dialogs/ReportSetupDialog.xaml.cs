@@ -1026,6 +1026,14 @@ public partial class ReportSetupDialog : Window
             : OutputMode.Rdl;
     }
 
+    private ReportPurpose ReadReportPurpose()
+    {
+        var tag = (CmbReportPurpose.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return Enum.TryParse<ReportPurpose>(tag, ignoreCase: true, out var purpose)
+            ? purpose
+            : ReportPurpose.MainReport;
+    }
+
     private StoredProcedureMetadata? BuildCurrentMetadata()
     {
         if (this.currentMetadata is null)
@@ -1058,6 +1066,7 @@ public partial class ReportSetupDialog : Window
         reportModel.Author = NormalizeOptional(TxtAuthor.Text);
         reportModel.Description = NormalizeOptional(TxtDescription.Text);
         reportModel.OutputMode = ReadOutputMode();
+        reportModel.Purpose = ReadReportPurpose();
         reportModel.SourceConnectionString = NormalizeOptional(TxtConnectionString.Text);
         reportModel.SourceStoredProcedureName = ReadStoredProcedureName();
         reportModel.OutputPath = NormalizeOptional(TxtOutputPath.Text);
@@ -1111,6 +1120,11 @@ public partial class ReportSetupDialog : Window
         reportModel.PageFooter.HeightInCentimeters = ReadPositiveDouble(TxtPageFooterHeight.Text, reportModel.PageFooter.HeightInCentimeters);
         ApplyPageFooterDisplayModeFlags(reportModel.PageFooter);
         reportModel.PageFooter.PrintOnLastPage = ChkPageFooterLastPage.IsChecked == true;
+        if (reportModel.Purpose != ReportPurpose.MainReport)
+        {
+            reportModel.PageHeader.Enabled = false;
+            reportModel.PageFooter.Enabled = false;
+        }
         reportModel.Parameters = BuildReportParametersFromGrid();
         NormalizeReportParameters(reportModel.Parameters);
         if (metadata is not null)
@@ -1203,6 +1217,7 @@ public partial class ReportSetupDialog : Window
         ChkPageFooterLastPage.IsChecked = model.PageFooter.PrintOnLastPage;
         SetBaseFontFamily(model.BaseFontFamily);
         SetOutputMode(model.OutputMode);
+        SetReportPurpose(model.Purpose);
         ApplyPageSetup(model.PageSetup);
 
         CmbStoredProcedure.ItemsSource = null;
@@ -1820,6 +1835,20 @@ public partial class ReportSetupDialog : Window
         CmbOutputMode.SelectedIndex = 0;
     }
 
+    private void SetReportPurpose(ReportPurpose purpose)
+    {
+        foreach (var item in CmbReportPurpose.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), purpose.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                CmbReportPurpose.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbReportPurpose.SelectedIndex = 0;
+    }
+
     private PageSetupConfig BuildPageSetup()
     {
         var pageSize = ReadPageSize();
@@ -1960,6 +1989,15 @@ public partial class ReportSetupDialog : Window
         {
             name = "Report";
         }
+
+        name = ReadReportPurpose() switch
+        {
+            ReportPurpose.MemorandumSubreport when !name.StartsWith("Memorandum_", StringComparison.OrdinalIgnoreCase)
+                => "Memorandum_" + name,
+            ReportPurpose.ReportSummarySubreport when !name.StartsWith("ReportSummary_", StringComparison.OrdinalIgnoreCase)
+                => "ReportSummary_" + name,
+            _ => name
+        };
 
         foreach (var invalid in Path.GetInvalidFileNameChars())
         {

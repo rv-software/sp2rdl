@@ -157,14 +157,21 @@
                         <CheckBox x:Name="ChkReportTitleEnabled" Content="Generate title band" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
                     </StackPanel>
 
-                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Output mode:" Style="{StaticResource LabelText}"/>
-                    <ComboBox Grid.Row="10" Grid.Column="1" x:Name="CmbOutputMode" Style="{StaticResource FieldCombo}" Width="180" HorizontalAlignment="Left" SelectedIndex="0">
+                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Purpose:" Style="{StaticResource LabelText}"/>
+                    <ComboBox Grid.Row="10" Grid.Column="1" x:Name="CmbReportPurpose" Style="{StaticResource FieldCombo}" Width="230" HorizontalAlignment="Left" SelectedIndex="0">
+                        <ComboBoxItem Content="Main report" Tag="MainReport"/>
+                        <ComboBoxItem Content="Memorandum subreport" Tag="MemorandumSubreport"/>
+                        <ComboBoxItem Content="Report summary subreport" Tag="ReportSummarySubreport"/>
+                    </ComboBox>
+
+                    <TextBlock Grid.Row="12" Grid.Column="0" Text="Output mode:" Style="{StaticResource LabelText}"/>
+                    <ComboBox Grid.Row="12" Grid.Column="1" x:Name="CmbOutputMode" Style="{StaticResource FieldCombo}" Width="180" HorizontalAlignment="Left" SelectedIndex="0">
                         <ComboBoxItem Content="RDL" Tag="Rdl"/>
                         <ComboBoxItem Content="RDLC" Tag="Rdlc"/>
                     </ComboBox>
 
-                    <TextBlock Grid.Row="12" Grid.Column="0" Text="Page:" Style="{StaticResource LabelText}"/>
-                    <WrapPanel Grid.Row="12" Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock Grid.Row="14" Grid.Column="0" Text="Page:" Style="{StaticResource LabelText}"/>
+                    <WrapPanel Grid.Row="14" Grid.Column="1" VerticalAlignment="Center">
                         <ComboBox x:Name="CmbPageSize" Style="{StaticResource FieldCombo}" Width="90" SelectedIndex="0" Margin="0,0,8,0">
                             <ComboBoxItem Content="A4" Tag="A4"/>
                             <ComboBoxItem Content="A3" Tag="A3"/>
@@ -182,8 +189,8 @@
                         <TextBox x:Name="TxtMarginBottom" Style="{StaticResource FieldBox}" Width="52" Text="1"/>
                     </WrapPanel>
 
-                    <TextBlock Grid.Row="14" Grid.Column="0" Text="Base font:" Style="{StaticResource LabelText}"/>
-                    <ComboBox Grid.Row="14" Grid.Column="1" x:Name="CmbBaseFont" Style="{StaticResource FieldCombo}" Width="260" HorizontalAlignment="Left" IsEditable="True" IsTextSearchEnabled="True"/>
+                    <TextBlock Grid.Row="16" Grid.Column="0" Text="Base font:" Style="{StaticResource LabelText}"/>
+                    <ComboBox Grid.Row="16" Grid.Column="1" x:Name="CmbBaseFont" Style="{StaticResource FieldCombo}" Width="260" HorizontalAlignment="Left" IsEditable="True" IsTextSearchEnabled="True"/>
 
                 </Grid>
             </TabItem>
