@@ -530,6 +530,7 @@ internal sealed class RdlBuilder
                 model.Memorandum.LayoutMode,
                 model.Memorandum.SubreportName,
                 model.Memorandum.SubreportPath,
+                model.Memorandum.SubreportServerPath,
                 model.Memorandum.SubreportParameterMappings,
                 model,
                 usableWidth,
@@ -559,6 +560,7 @@ internal sealed class RdlBuilder
                 model.ReportSummary.LayoutMode,
                 model.ReportSummary.SubreportName,
                 model.ReportSummary.SubreportPath,
+                model.ReportSummary.SubreportServerPath,
                 model.ReportSummary.SubreportParameterMappings,
                 model,
                 usableWidth,
@@ -672,6 +674,7 @@ internal sealed class RdlBuilder
         ReportBandLayoutMode layoutMode,
         string? subreportName,
         string? subreportPath,
+        string? subreportServerPath,
         IReadOnlyList<SubreportParameterMapping> parameterMappings,
         ReportModel model,
         double usableWidth,
@@ -683,9 +686,7 @@ internal sealed class RdlBuilder
             return null;
         }
 
-        var reportName = !string.IsNullOrWhiteSpace(subreportName)
-            ? subreportName.Trim()
-            : NormalizeSubreportReference(subreportPath);
+        var reportName = ResolveSubreportReportName(subreportServerPath, subreportName, subreportPath);
         if (string.IsNullOrWhiteSpace(reportName))
         {
             return null;
@@ -702,6 +703,21 @@ internal sealed class RdlBuilder
             new XElement(Rdl + "Style",
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "None"))));
+    }
+
+    private static string? ResolveSubreportReportName(string? subreportServerPath, string? subreportName, string? subreportPath)
+    {
+        if (!string.IsNullOrWhiteSpace(subreportServerPath))
+        {
+            return subreportServerPath.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(subreportName))
+        {
+            return subreportName.Trim();
+        }
+
+        return NormalizeSubreportReference(subreportPath);
     }
 
     private static XElement? BuildSubreportParameters(

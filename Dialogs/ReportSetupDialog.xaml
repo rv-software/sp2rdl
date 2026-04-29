@@ -138,7 +138,6 @@
                         <RowDefinition Height="10"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="10"/>
-                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" Style="{StaticResource LabelText}"/>
@@ -575,8 +574,11 @@
                     <TextBox Grid.Row="10" Grid.Column="1" x:Name="TxtMemorandumSubreport" Style="{StaticResource FieldBox}" Height="34"/>
                     <Button Grid.Row="10" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumSubreportButton_Click"/>
 
-                    <TextBlock Grid.Row="12" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
-                    <Grid Grid.Row="12" Grid.Column="1" Grid.ColumnSpan="3">
+                    <TextBlock Grid.Row="12" Grid.Column="0" Text="Server path:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="12" Grid.Column="1" Grid.ColumnSpan="3" x:Name="TxtMemorandumSubreportServerPath" Style="{StaticResource FieldBox}" Height="34"/>
+
+                    <TextBlock Grid.Row="14" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
+                    <Grid Grid.Row="14" Grid.Column="1" Grid.ColumnSpan="3">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="8"/>
@@ -599,12 +601,12 @@
                         </Grid>
                     </Grid>
 
-                    <TextBlock Grid.Row="14" Grid.Column="0" Text="Logo:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="14" Grid.Column="1" x:Name="TxtMemorandumLogo" Style="{StaticResource FieldBox}" Height="34"/>
-                    <Button Grid.Row="14" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumLogoButton_Click"/>
+                    <TextBlock Grid.Row="16" Grid.Column="0" Text="Logo:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="16" Grid.Column="1" x:Name="TxtMemorandumLogo" Style="{StaticResource FieldBox}" Height="34"/>
+                    <Button Grid.Row="16" Grid.Column="3" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseMemorandumLogoButton_Click"/>
 
-                    <TextBlock Grid.Row="16" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="16" Grid.Column="1" x:Name="TxtMemorandumHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
+                    <TextBlock Grid.Row="18" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="18" Grid.Column="1" x:Name="TxtMemorandumHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
                 </Grid>
             </TabItem>
 
@@ -615,6 +617,8 @@
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="10"/>
                         <RowDefinition Height="Auto"/>
@@ -651,8 +655,11 @@
                         <Button Grid.Column="2" Content="Browse" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Height="34" Click="BrowseReportSummarySubreportButton_Click"/>
                     </Grid>
 
-                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
-                    <Grid Grid.Row="6" Grid.Column="1">
+                    <TextBlock Grid.Row="6" Grid.Column="0" Text="Server path:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="6" Grid.Column="1" x:Name="TxtReportSummarySubreportServerPath" Style="{StaticResource FieldBox}" Height="34"/>
+
+                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Template:" Style="{StaticResource LabelText}"/>
+                    <Grid Grid.Row="8" Grid.Column="1">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="8"/>
@@ -665,8 +672,8 @@
                         </Grid>
                     </Grid>
 
-                    <TextBlock Grid.Row="8" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
-                    <TextBox Grid.Row="8" Grid.Column="1" x:Name="TxtReportSummaryHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
+                    <TextBlock Grid.Row="10" Grid.Column="0" Text="Height cm:" Style="{StaticResource LabelText}"/>
+                    <TextBox Grid.Row="10" Grid.Column="1" x:Name="TxtReportSummaryHeight" Style="{StaticResource FieldBox}" Width="120" HorizontalAlignment="Left"/>
                 </Grid>
             </TabItem>
 

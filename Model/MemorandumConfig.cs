@@ -10,6 +10,8 @@ internal sealed class MemorandumConfig
 
     public string? SubreportName { get; set; }
 
+    public string? SubreportServerPath { get; set; }
+
     public List<SubreportParameterMapping> SubreportParameterMappings { get; set; } = new();
 
     public bool FallbackToInline { get; set; } = true;

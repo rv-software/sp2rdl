@@ -298,10 +298,18 @@ public partial class ReportSetupDialog : Window
         => BrowseImagePath(TxtMemorandumLogo, "Select memorandum logo", "Could not choose memorandum logo");
 
     private void BrowseMemorandumSubreportButton_Click(object sender, RoutedEventArgs e)
-        => BrowseReportDefinitionPath(TxtMemorandumSubreport, "Select memorandum subreport", "Could not choose memorandum subreport");
+        => BrowseReportDefinitionPath(
+            TxtMemorandumSubreport,
+            TxtMemorandumSubreportServerPath,
+            "Select memorandum subreport",
+            "Could not choose memorandum subreport");
 
     private void BrowseReportSummarySubreportButton_Click(object sender, RoutedEventArgs e)
-        => BrowseReportDefinitionPath(TxtReportSummarySubreport, "Select report summary subreport", "Could not choose report summary subreport");
+        => BrowseReportDefinitionPath(
+            TxtReportSummarySubreport,
+            TxtReportSummarySubreportServerPath,
+            "Select report summary subreport",
+            "Could not choose report summary subreport");
 
     private void BrowseImagePath(TextBox targetTextBox, string title, string errorMessage)
     {
@@ -325,7 +333,7 @@ public partial class ReportSetupDialog : Window
         }
     }
 
-    private void BrowseReportDefinitionPath(TextBox targetTextBox, string title, string errorMessage)
+    private void BrowseReportDefinitionPath(TextBox targetTextBox, TextBox? serverPathTextBox, string title, string errorMessage)
     {
         try
         {
@@ -339,6 +347,10 @@ public partial class ReportSetupDialog : Window
             if (dialog.ShowDialog(this) == true)
             {
                 targetTextBox.Text = dialog.FileName;
+                if (serverPathTextBox is not null && string.IsNullOrWhiteSpace(serverPathTextBox.Text))
+                {
+                    serverPathTextBox.Text = BuildSubreportName(dialog.FileName) ?? string.Empty;
+                }
             }
         }
         catch (Exception ex)
@@ -1066,6 +1078,7 @@ public partial class ReportSetupDialog : Window
         reportModel.Memorandum.LayoutMode = ReadReportBandLayoutMode(CmbMemorandumLayoutMode);
         reportModel.Memorandum.SubreportPath = NormalizeOptional(TxtMemorandumSubreport.Text);
         reportModel.Memorandum.SubreportName = BuildSubreportName(reportModel.Memorandum.SubreportPath);
+        reportModel.Memorandum.SubreportServerPath = NormalizeOptional(TxtMemorandumSubreportServerPath.Text);
         reportModel.Memorandum.FallbackToInline = ChkMemorandumFallbackInline.IsChecked == true;
         reportModel.Memorandum.RichTextParagraphs.Clear();
         reportModel.Memorandum.TextTemplate = TxtMemorandumTemplate.Text.Trim();
@@ -1077,6 +1090,7 @@ public partial class ReportSetupDialog : Window
         reportModel.ReportSummary.LayoutMode = ReadReportBandLayoutMode(CmbReportSummaryLayoutMode);
         reportModel.ReportSummary.SubreportPath = NormalizeOptional(TxtReportSummarySubreport.Text);
         reportModel.ReportSummary.SubreportName = BuildSubreportName(reportModel.ReportSummary.SubreportPath);
+        reportModel.ReportSummary.SubreportServerPath = NormalizeOptional(TxtReportSummarySubreportServerPath.Text);
         reportModel.ReportSummary.FallbackToInline = ChkReportSummaryFallbackInline.IsChecked == true;
         reportModel.ReportSummary.TextTemplate = TxtReportSummaryTemplate.Text.Trim();
         reportModel.ReportSummary.ShowTopLine = ChkReportSummaryTopLine.IsChecked == true;
@@ -1156,6 +1170,7 @@ public partial class ReportSetupDialog : Window
         ChkMemorandumEnabled.IsChecked = model.Memorandum.Enabled;
         SetReportBandLayoutMode(CmbMemorandumLayoutMode, model.Memorandum.LayoutMode);
         TxtMemorandumSubreport.Text = model.Memorandum.SubreportPath ?? model.Memorandum.SubreportName ?? string.Empty;
+        TxtMemorandumSubreportServerPath.Text = model.Memorandum.SubreportServerPath ?? model.Memorandum.SubreportName ?? string.Empty;
         ChkMemorandumFallbackInline.IsChecked = model.Memorandum.FallbackToInline;
         TxtMemorandumTemplate.Text = string.IsNullOrWhiteSpace(model.Memorandum.TextTemplate)
             ? "<b>{CompanyName}</b>"
@@ -1167,6 +1182,7 @@ public partial class ReportSetupDialog : Window
         ChkReportSummaryEnabled.IsChecked = model.ReportSummary.Enabled;
         SetReportBandLayoutMode(CmbReportSummaryLayoutMode, model.ReportSummary.LayoutMode);
         TxtReportSummarySubreport.Text = model.ReportSummary.SubreportPath ?? model.ReportSummary.SubreportName ?? string.Empty;
+        TxtReportSummarySubreportServerPath.Text = model.ReportSummary.SubreportServerPath ?? model.ReportSummary.SubreportName ?? string.Empty;
         ChkReportSummaryFallbackInline.IsChecked = model.ReportSummary.FallbackToInline;
         TxtReportSummaryTemplate.Text = model.ReportSummary.TextTemplate;
         ChkReportSummaryTopLine.IsChecked = model.ReportSummary.ShowTopLine;
