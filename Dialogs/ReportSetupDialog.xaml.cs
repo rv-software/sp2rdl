@@ -1148,6 +1148,11 @@ public partial class ReportSetupDialog : Window
 
     private void GenerateButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!ValidateOutputPathBeforeGenerate())
+        {
+            return;
+        }
+
         var reportModel = BuildReportModelFromCurrentState();
 
         Request = new ReportGenerationRequest
@@ -1160,6 +1165,24 @@ public partial class ReportSetupDialog : Window
 
         DialogResult = true;
         Close();
+    }
+
+    private bool ValidateOutputPathBeforeGenerate()
+    {
+        if (!string.IsNullOrWhiteSpace(TxtOutputPath.Text))
+        {
+            return true;
+        }
+
+        MainTabs.SelectedItem = OutputTab;
+        TxtOutputPath.Focus();
+        MessageBox.Show(
+            this,
+            "Before Generate, choose the output file location and name on the Output tab.",
+            "sp2rdlGenExtension",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
+        return false;
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)

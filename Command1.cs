@@ -95,12 +95,29 @@ namespace sp2rdlGenExtension
             }
             catch (Exception ex)
             {
-                this.logger.TraceEvent(TraceEventType.Error, 0, ex.ToString());
+                var error = BuildSafeExceptionSummary(ex);
+                this.logger.TraceEvent(TraceEventType.Error, 0, error);
                 await this.Extensibility.Shell().ShowPromptAsync(
-                    $"Generation setup failed:{Environment.NewLine}{ex.Message}",
+                    $"Generation setup failed:{Environment.NewLine}{error}",
                     PromptOptions.OK,
                     cancellationToken);
             }
+        }
+
+        private static string BuildSafeExceptionSummary(Exception ex)
+        {
+            var details = new List<string>
+            {
+                ex.GetType().FullName ?? ex.GetType().Name,
+                $"HResult: 0x{ex.HResult:X8}"
+            };
+
+            if (!string.IsNullOrWhiteSpace(ex.StackTrace))
+            {
+                details.Add(ex.StackTrace);
+            }
+
+            return string.Join(Environment.NewLine, details);
         }
 
         private async Task<string?> ResolveSolutionDirectoryAsync(CancellationToken cancellationToken)

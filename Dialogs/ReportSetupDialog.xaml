@@ -98,7 +98,7 @@
                        FontSize="12"/>
         </StackPanel>
 
-        <TabControl Grid.Row="2" Background="{DynamicResource DialogPanelBrush}" BorderBrush="{DynamicResource DialogBorderBrush}" Foreground="{DynamicResource DialogPrimaryTextBrush}">
+        <TabControl Grid.Row="2" x:Name="MainTabs" Background="{DynamicResource DialogPanelBrush}" BorderBrush="{DynamicResource DialogBorderBrush}" Foreground="{DynamicResource DialogPrimaryTextBrush}">
             <TabItem Header="General">
                 <Grid Margin="16">
                     <Grid.ColumnDefinitions>
@@ -687,7 +687,7 @@
                 </Grid>
             </TabItem>
 
-            <TabItem Header="Output">
+            <TabItem x:Name="OutputTab" Header="Output">
                 <Grid Margin="16" VerticalAlignment="Top">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
