@@ -95,12 +95,18 @@ public partial class ReportSetupDialog : Window
         TxtMemorandumTemplate.Text = "<b>{CompanyName}</b>";
         InitializeTemplateContextMenus();
         GridReportParameters.RowEditEnding += GridReportParameters_RowEditEnding;
+        GridReportVariables.CurrentCellChanged += GridReportVariables_CurrentCellChanged;
         this.Closed += OnClosed;
     }
 
     private void GridReportParameters_RowEditEnding(object? sender, DataGridRowEditEndingEventArgs e)
     {
         SortReportParametersByOrdinal();
+    }
+
+    private void GridReportVariables_CurrentCellChanged(object? sender, EventArgs e)
+    {
+        RefreshVisibleTemplatePreviews();
     }
 
     private void LoadInstalledFonts()
@@ -479,25 +485,15 @@ public partial class ReportSetupDialog : Window
     {
         CommitPendingGridEdits();
 
-        if (string.IsNullOrWhiteSpace(TxtReportVariablesSql.Text))
-        {
-            MessageBox.Show(this, "Report variables SQL is required.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(TxtConnectionString.Text))
-        {
-            MessageBox.Show(this, "Connection string is required to inspect report variables SQL.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
         try
         {
             Cursor = System.Windows.Input.Cursors.Wait;
-            var preview = await this.sqlIntrospector.PreviewSqlAsync(
-                TxtConnectionString.Text.Trim(),
-                TxtReportVariablesSql.Text.Trim(),
-                this.cts.Token);
+            var preview = await PreviewReportVariablesSqlAsync(showValidationMessages: true);
+            if (preview is null)
+            {
+                return;
+            }
+
             var added = MergeReportVariablesFromColumns(preview.Columns);
             UpdateReportVariablePreviewValues(preview);
             RefreshVisibleTemplatePreviews();
@@ -522,6 +518,60 @@ public partial class ReportSetupDialog : Window
         {
             Cursor = null;
         }
+    }
+
+    private async Task RefreshReportVariablePreviewAsync()
+    {
+        if (ChkMemorandumPreview.IsChecked != true && ChkReportSummaryPreview.IsChecked != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var preview = await PreviewReportVariablesSqlAsync(showValidationMessages: false);
+            if (preview is not null)
+            {
+                UpdateReportVariablePreviewValues(preview);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            // Preview refresh is opportunistic; explicit Generate variables still reports errors.
+        }
+
+        RefreshVisibleTemplatePreviews();
+    }
+
+    private async Task<DataTable?> PreviewReportVariablesSqlAsync(bool showValidationMessages)
+    {
+        if (string.IsNullOrWhiteSpace(TxtReportVariablesSql.Text))
+        {
+            if (showValidationMessages)
+            {
+                MessageBox.Show(this, "Report variables SQL is required.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(TxtConnectionString.Text))
+        {
+            if (showValidationMessages)
+            {
+                MessageBox.Show(this, "Connection string is required to inspect report variables SQL.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            return null;
+        }
+
+        return await this.sqlIntrospector.PreviewSqlAsync(
+            TxtConnectionString.Text.Trim(),
+            TxtReportVariablesSql.Text.Trim(),
+            this.cts.Token);
     }
 
     private int MergeReportVariablesFromColumns(DataColumnCollection columns)
@@ -645,10 +695,10 @@ public partial class ReportSetupDialog : Window
     }
 
     private void MemorandumPreviewCheckBox_Changed(object sender, RoutedEventArgs e)
-        => SetTemplatePreviewMode(TxtMemorandumTemplate, BrowserMemorandumPreview, ChkMemorandumPreview.IsChecked == true);
+        => _ = SetTemplatePreviewModeAsync(TxtMemorandumTemplate, BrowserMemorandumPreview, ChkMemorandumPreview.IsChecked == true);
 
     private void ReportSummaryPreviewCheckBox_Changed(object sender, RoutedEventArgs e)
-        => SetTemplatePreviewMode(TxtReportSummaryTemplate, BrowserReportSummaryPreview, ChkReportSummaryPreview.IsChecked == true);
+        => _ = SetTemplatePreviewModeAsync(TxtReportSummaryTemplate, BrowserReportSummaryPreview, ChkReportSummaryPreview.IsChecked == true);
 
     private void TemplateTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
@@ -667,10 +717,11 @@ public partial class ReportSetupDialog : Window
         }
     }
 
-    private void SetTemplatePreviewMode(TextBox editor, WebBrowser preview, bool enabled)
+    private async Task SetTemplatePreviewModeAsync(TextBox editor, WebBrowser preview, bool enabled)
     {
         if (enabled)
         {
+            await RefreshReportVariablePreviewAsync();
             UpdateTemplatePreview(editor, preview);
             editor.Visibility = Visibility.Collapsed;
             preview.Visibility = Visibility.Visible;
