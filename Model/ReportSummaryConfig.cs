@@ -16,9 +16,11 @@ internal sealed class ReportSummaryConfig
 
     public bool FallbackToInline { get; set; } = true;
 
-    public string TextTemplate { get; set; } = string.Empty;
-
     public bool ShowTopLine { get; set; } = true;
+
+    public int ColumnCount { get; set; } = 1;
+
+    public List<ReportSummaryColumnConfig> Columns { get; set; } = new();
 
     public double HeightInCentimeters { get; set; } = 2.0d;
 }

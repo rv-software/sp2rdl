@@ -4,12 +4,15 @@ using System.Data.SqlClient;
 using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Win32;
+using sp2rdlGenExtension.Generation;
 using sp2rdlGenExtension.Model;
 using sp2rdlGenExtension.Persistence;
 using sp2rdlGenExtension.Services;
@@ -54,7 +57,7 @@ public partial class ReportSetupDialog : Window
         "varbinary"
     ];
     private static readonly IReadOnlyList<string> CompareOperators = [">=", "<=", ">", "<", "="];
-    private static readonly IReadOnlyList<string> AggregateOptions = [string.Empty, "Sum", "Count", "CountDistinct", "Min", "Max", "Avg"];
+    private static readonly IReadOnlyList<string> TextAlignOptions = [string.Empty, "Left", "Center", "Right"];
     private static readonly IReadOnlyList<Choice<int>> GroupLevels =
     [
         new(0, string.Empty),
@@ -66,6 +69,7 @@ public partial class ReportSetupDialog : Window
 
     private readonly string solutionDirectory;
     private readonly SqlIntrospector sqlIntrospector;
+    private readonly ReportOutputWriter outputWriter;
     private readonly ObservableCollection<DatasetFieldDraft> fieldDrafts = new();
     private readonly ObservableCollection<ReportParameter> reportParameters = new();
     private readonly ObservableCollection<ReportVariableConfig> reportVariables = new();
@@ -73,18 +77,20 @@ public partial class ReportSetupDialog : Window
     private readonly Dictionary<string, string?> reportVariablePreviewValues = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource cts = new();
     private StoredProcedureMetadata? currentMetadata;
+    private TextBox? activeReportSummaryTemplateBox;
 
     internal ReportGenerationRequest Request { get; private set; } = new();
 
-    internal ReportSetupDialog(string solutionDirectory, SqlIntrospector sqlIntrospector)
+    internal ReportSetupDialog(string solutionDirectory, SqlIntrospector sqlIntrospector, ReportOutputWriter outputWriter)
     {
         this.solutionDirectory = solutionDirectory;
         this.sqlIntrospector = sqlIntrospector;
+        this.outputWriter = outputWriter;
         InitializeComponent();
         LoadInstalledFonts();
         ColFieldSqlType.ItemsSource = SqlTypeNames;
         ColFieldGroupLevel.ItemsSource = GroupLevels;
-        ColFieldAggregate.ItemsSource = AggregateOptions;
+        ColFieldTextAlign.ItemsSource = TextAlignOptions;
         ColParameterSqlType.ItemsSource = SqlTypeNames;
         ColParameterControlType.ItemsSource = Enum.GetValues(typeof(ControlType));
         ColParameterCompareOperator.ItemsSource = CompareOperators;
@@ -93,7 +99,9 @@ public partial class ReportSetupDialog : Window
         GridReportParameters.ItemsSource = this.reportParameters;
         GridReportVariables.ItemsSource = this.reportVariables;
         TxtMemorandumTemplate.Text = "<b>{CompanyName}</b>";
+        ApplyTablixStyle(new TablixStyleConfig());
         InitializeTemplateContextMenus();
+        UpdateReportSummaryColumnVisibility();
         GridReportParameters.RowEditEnding += GridReportParameters_RowEditEnding;
         GridReportVariables.CurrentCellChanged += GridReportVariables_CurrentCellChanged;
         this.Closed += OnClosed;
@@ -119,9 +127,13 @@ public partial class ReportSetupDialog : Window
             .ToList();
 
         CmbBaseFont.ItemsSource = fontFamilies;
+        CmbTablixFontFamily.ItemsSource = fontFamilies;
         CmbBaseFont.SelectedItem = fontFamilies.FirstOrDefault(fontFamily =>
             string.Equals(fontFamily, "Arial", StringComparison.OrdinalIgnoreCase));
         CmbBaseFont.Text = CmbBaseFont.SelectedItem?.ToString() ?? fontFamilies.FirstOrDefault() ?? "Arial";
+        CmbTablixFontFamily.SelectedItem = fontFamilies.FirstOrDefault(fontFamily =>
+            string.Equals(fontFamily, "Arial Narrow", StringComparison.OrdinalIgnoreCase));
+        CmbTablixFontFamily.Text = CmbTablixFontFamily.SelectedItem?.ToString() ?? "Arial Narrow";
     }
 
     private void OnClosed(object? sender, EventArgs e)
@@ -243,6 +255,76 @@ public partial class ReportSetupDialog : Window
     private void LoadStateButton_Click(object sender, RoutedEventArgs e)
         => _ = LoadStateAsync();
 
+    private void ReadmeButton_Click(object sender, RoutedEventArgs e)
+        => ShowHelpDocument("README.md", "SP to RDL Generator README");
+
+    private void QuickGuideButton_Click(object sender, RoutedEventArgs e)
+        => ShowHelpDocument(Path.Combine("docs", "REPORT_DEVELOPER_QUICK_GUIDE.md"), "SP to RDL Generator Quick Guide");
+
+    private void ShowHelpDocument(string relativePath, string title)
+    {
+        try
+        {
+            var dialog = new ReadmeDialog(title, LoadHelpDocumentText(relativePath))
+            {
+                Owner = this
+            };
+            DialogThemeService.ApplyFromOwner(dialog, this);
+            dialog.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not open help document:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private static string LoadHelpDocumentText(string relativePath)
+    {
+        foreach (var path in GetHelpDocumentCandidatePaths(relativePath))
+        {
+            if (File.Exists(path))
+            {
+                return File.ReadAllText(path);
+            }
+        }
+
+        return LoadEmbeddedHelpDocumentText(relativePath)
+            ?? $"{relativePath} was not found next to the extension binaries or embedded resources.";
+    }
+
+    private static IEnumerable<string> GetHelpDocumentCandidatePaths(string relativePath)
+    {
+        yield return Path.Combine(AppContext.BaseDirectory, relativePath);
+
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            yield return Path.Combine(directory.FullName, relativePath);
+            directory = directory.Parent;
+        }
+    }
+
+    private static string? LoadEmbeddedHelpDocumentText(string relativePath)
+    {
+        var resourceName = relativePath.Replace('\\', '.').Replace('/', '.');
+        var assembly = Assembly.GetExecutingAssembly();
+        var fullResourceName = assembly.GetManifestResourceNames()
+            .FirstOrDefault(name => name.EndsWith(".Help." + resourceName, StringComparison.OrdinalIgnoreCase));
+        if (fullResourceName is null)
+        {
+            return null;
+        }
+
+        using var stream = assembly.GetManifestResourceStream(fullResourceName);
+        if (stream is null)
+        {
+            return null;
+        }
+
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return reader.ReadToEnd();
+    }
+
     private async Task LoadStateAsync()
     {
         try
@@ -323,6 +405,28 @@ public partial class ReportSetupDialog : Window
             TxtReportSummarySubreportServerPath,
             "Select report summary subreport",
             "Could not choose report summary subreport");
+
+    private void PickTablixShadeBaseColorButton_Click(object sender, RoutedEventArgs e)
+        => PickColorInto(TxtTablixShadeBaseColor);
+
+    private void PickTablixBorderColorButton_Click(object sender, RoutedEventArgs e)
+        => PickColorInto(TxtTablixBorderColor);
+
+    private void PickTablixFontColorButton_Click(object sender, RoutedEventArgs e)
+        => PickColorInto(TxtTablixFontColor);
+
+    private void PickColorInto(TextBox target)
+    {
+        var dialog = new ColorPickerDialog(NormalizeHexColor(target.Text, "#000000"))
+        {
+            Owner = this
+        };
+        DialogThemeService.ApplyFromOwner(dialog, this);
+        if (dialog.ShowDialog() == true)
+        {
+            target.Text = dialog.SelectedHexColor;
+        }
+    }
 
     private void BrowseImagePath(TextBox targetTextBox, string title, string errorMessage)
     {
@@ -527,7 +631,7 @@ public partial class ReportSetupDialog : Window
 
     private async Task RefreshReportVariablePreviewAsync(bool force = false)
     {
-        if (!force && ChkMemorandumPreview.IsChecked != true && ChkReportSummaryPreview.IsChecked != true)
+        if (!force && ChkMemorandumPreview.IsChecked != true)
         {
             return;
         }
@@ -642,16 +746,14 @@ public partial class ReportSetupDialog : Window
             UpdateTemplatePreview(TxtMemorandumTemplate, BrowserMemorandumPreview);
         }
 
-        if (ChkReportSummaryPreview.IsChecked == true)
-        {
-            UpdateTemplatePreview(TxtReportSummaryTemplate, BrowserReportSummaryPreview);
-        }
     }
 
     private void InitializeTemplateContextMenus()
     {
         TxtMemorandumTemplate.ContextMenu = BuildTemplateContextMenu(TxtMemorandumTemplate);
-        TxtReportSummaryTemplate.ContextMenu = BuildTemplateContextMenu(TxtReportSummaryTemplate);
+        TxtReportSummaryColumn1Template.ContextMenu = BuildTemplateContextMenu(TxtReportSummaryColumn1Template);
+        TxtReportSummaryColumn2Template.ContextMenu = BuildTemplateContextMenu(TxtReportSummaryColumn2Template);
+        TxtReportSummaryColumn3Template.ContextMenu = BuildTemplateContextMenu(TxtReportSummaryColumn3Template);
     }
 
     private void MemorandumBoldButton_Click(object sender, RoutedEventArgs e)
@@ -678,12 +780,6 @@ public partial class ReportSetupDialog : Window
     private void MemorandumNumberButton_Click(object sender, RoutedEventArgs e)
         => WrapMemorandumSelection("<ol><li>", "</li></ol>");
 
-    private void MemorandumCompanyPlaceholderButton_Click(object sender, RoutedEventArgs e)
-        => InsertMemorandumText("{CompanyName}");
-
-    private void MemorandumReportTitlePlaceholderButton_Click(object sender, RoutedEventArgs e)
-        => InsertMemorandumText("{ReportTitle}");
-
     private void WrapMemorandumSelection(string before, string after)
     {
         ChkMemorandumPreview.IsChecked = false;
@@ -702,8 +798,59 @@ public partial class ReportSetupDialog : Window
     private void MemorandumPreviewCheckBox_Changed(object sender, RoutedEventArgs e)
         => _ = SetTemplatePreviewModeAsync(TxtMemorandumTemplate, BrowserMemorandumPreview, ChkMemorandumPreview.IsChecked == true);
 
-    private void ReportSummaryPreviewCheckBox_Changed(object sender, RoutedEventArgs e)
-        => _ = SetTemplatePreviewModeAsync(TxtReportSummaryTemplate, BrowserReportSummaryPreview, ChkReportSummaryPreview.IsChecked == true);
+    private void ReportSummaryBoldButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<b>", "</b>");
+
+    private void ReportSummaryItalicButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<i>", "</i>");
+
+    private void ReportSummaryUnderlineButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<u>", "</u>");
+
+    private void ReportSummaryAlignLeftButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<p style=\"text-align:left;\">", "</p>");
+
+    private void ReportSummaryAlignCenterButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<p style=\"text-align:center;\">", "</p>");
+
+    private void ReportSummaryAlignRightButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<p style=\"text-align:right;\">", "</p>");
+
+    private void ReportSummaryBulletButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<ul><li>", "</li></ul>");
+
+    private void ReportSummaryNumberButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<ol><li>", "</li></ol>");
+
+    private void ReportSummaryLineButton_Click(object sender, RoutedEventArgs e)
+        => InsertActiveReportSummaryText("{Line}");
+
+    private void ReportSummaryTemplate_GotKeyboardFocus(object sender, System.Windows.Input.KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is TextBox textBox)
+        {
+            this.activeReportSummaryTemplateBox = textBox;
+        }
+    }
+
+    private TextBox GetActiveReportSummaryTemplateBox()
+        => this.activeReportSummaryTemplateBox
+            ?? TxtReportSummaryColumn1Template;
+
+    private void WrapActiveReportSummarySelection(string before, string after)
+    {
+        var editor = GetActiveReportSummaryTemplateBox();
+        var selected = editor.SelectedText;
+        editor.SelectedText = before + selected + after;
+        editor.Focus();
+    }
+
+    private void InsertActiveReportSummaryText(string text)
+    {
+        var editor = GetActiveReportSummaryTemplateBox();
+        editor.SelectedText = text;
+        editor.Focus();
+    }
 
     private void TemplateTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
@@ -716,10 +863,6 @@ public partial class ReportSetupDialog : Window
         {
             UpdateTemplatePreview(TxtMemorandumTemplate, BrowserMemorandumPreview);
         }
-        else if (ReferenceEquals(sender, TxtReportSummaryTemplate) && ChkReportSummaryPreview.IsChecked == true)
-        {
-            UpdateTemplatePreview(TxtReportSummaryTemplate, BrowserReportSummaryPreview);
-        }
     }
 
     private async Task SetTemplatePreviewModeAsync(TextBox editor, WebBrowser preview, bool enabled)
@@ -728,7 +871,14 @@ public partial class ReportSetupDialog : Window
         {
             editor.Visibility = Visibility.Collapsed;
             preview.Visibility = Visibility.Visible;
-            await RefreshReportVariablePreviewAsync();
+
+            // Force a layout pass so the WebBrowser HWND is realized before NavigateToString;
+            // without this the very first NavigateToString after visibility flip is a no-op
+            // and users had to toggle the preview checkbox twice to see content.
+            preview.UpdateLayout();
+            await Dispatcher.Yield(DispatcherPriority.Loaded);
+
+            await RefreshReportVariablePreviewAsync(force: true);
             UpdateTemplatePreview(editor, preview);
             return;
         }
@@ -818,6 +968,11 @@ public partial class ReportSetupDialog : Window
         return TemplatePlaceholderRegex.Replace(template, match =>
         {
             var name = match.Groups["name"].Value;
+            if (string.Equals(name, "Line", StringComparison.OrdinalIgnoreCase))
+            {
+                return "<hr style=\"border:0; border-top:1px solid #A6A6A6; margin:4px 0;\"/>";
+            }
+
             return values.TryGetValue(name, out var value)
                 ? WebUtility.HtmlEncode(value ?? string.Empty)
                 : match.Value;
@@ -860,7 +1015,7 @@ public partial class ReportSetupDialog : Window
     private ContextMenu BuildTemplateContextMenu(TextBox textBox)
     {
         var menu = new ContextMenu();
-        var systemPlaceholders = new[] { "CompanyName", "ReportTitle" };
+        var systemPlaceholders = new[] { "CompanyName", "ReportTitle", "Line" };
         var reportVariables = this.reportVariables
             .Where(variable => variable.Enabled && !string.IsNullOrWhiteSpace(variable.Name))
             .Select(variable => variable.Name.Trim())
@@ -998,52 +1153,6 @@ public partial class ReportSetupDialog : Window
                 parameter.CompareToParameterName = parameterName;
                 parameter.CompareOperator = string.IsNullOrWhiteSpace(parameter.CompareOperator) ? ">=" : parameter.CompareOperator;
                 GridReportParameters.Items.Refresh();
-            };
-            contextMenu.Items.Add(menuItem);
-        }
-
-        button.ContextMenu = contextMenu;
-        contextMenu.PlacementTarget = button;
-        contextMenu.IsOpen = true;
-    }
-
-    private void AggregateDropDownButton_Click(object sender, RoutedEventArgs e)
-    {
-        CommitPendingGridEdits();
-
-        if (sender is not Button button || button.DataContext is not DatasetFieldDraft field)
-        {
-            return;
-        }
-
-        var contextMenu = new ContextMenu();
-        var clearItem = new MenuItem
-        {
-            Header = "(none)",
-            IsCheckable = true,
-            IsChecked = string.IsNullOrWhiteSpace(field.AggregateFunction)
-        };
-        clearItem.Click += (_, _) =>
-        {
-            field.AggregateFunction = null;
-            GridFields.Items.Refresh();
-        };
-        contextMenu.Items.Add(clearItem);
-        contextMenu.Items.Add(new Separator());
-
-        foreach (var aggregate in DatasetFieldDraft.GetAllowedAggregates(field.SqlTypeName))
-        {
-            var menuItem = new MenuItem
-            {
-                Header = aggregate,
-                IsCheckable = true,
-                IsChecked = string.Equals(field.AggregateFunction, aggregate, StringComparison.OrdinalIgnoreCase)
-            };
-            menuItem.Click += (_, _) =>
-            {
-                field.AggregateFunction = aggregate;
-                field.GroupLevel = 0;
-                GridFields.Items.Refresh();
             };
             contextMenu.Items.Add(menuItem);
         }
@@ -1210,22 +1319,72 @@ public partial class ReportSetupDialog : Window
         }
 
         var reportModel = BuildReportModelFromCurrentState();
+        var outputPath = TxtOutputPath.Text.Trim();
+        reportModel.OutputPath = outputPath;
 
         Request = new ReportGenerationRequest
         {
             ConnectionString = TxtConnectionString.Text.Trim(),
             StoredProcedureName = ReadStoredProcedureName(),
-            OutputPath = TxtOutputPath.Text.Trim(),
+            OutputPath = outputPath,
             ReportModel = reportModel
         };
 
-        DialogResult = true;
-        Close();
+        try
+        {
+            Cursor = System.Windows.Input.Cursors.Wait;
+            this.outputWriter.Write(outputPath, reportModel);
+            MessageBox.Show(
+                this,
+                $"Report generated:\n\n{outputPath}",
+                "sp2rdlGenExtension",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                this,
+                $"Could not generate report:\n\n{ex.Message}",
+                "sp2rdlGenExtension",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            Cursor = null;
+        }
     }
 
     private bool ValidateOutputPathBeforeGenerate()
     {
-        if (!string.IsNullOrWhiteSpace(TxtOutputPath.Text))
+        var outputPath = TxtOutputPath.Text?.Trim() ?? string.Empty;
+
+        string? error = null;
+        if (string.IsNullOrWhiteSpace(outputPath))
+        {
+            error = "Output file path is required. Choose the output .rdl/.rdlc location and name on the Output tab.";
+        }
+        else
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(Path.GetFileName(outputPath)))
+                {
+                    error = "Output file path must include a file name, not only a folder.";
+                }
+                else if (!Path.IsPathRooted(outputPath))
+                {
+                    error = "Output file path must be absolute (rooted) so the file lands in a known location.";
+                }
+            }
+            catch (ArgumentException)
+            {
+                error = "Output file path contains invalid characters.";
+            }
+        }
+
+        if (error is null)
         {
             return true;
         }
@@ -1234,14 +1393,14 @@ public partial class ReportSetupDialog : Window
         TxtOutputPath.Focus();
         MessageBox.Show(
             this,
-            "Before Generate, choose the output file location and name on the Output tab.",
+            error,
             "sp2rdlGenExtension",
             MessageBoxButton.OK,
             MessageBoxImage.Warning);
         return false;
     }
 
-    private void CancelButton_Click(object sender, RoutedEventArgs e)
+    private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
         if (!this.cts.IsCancellationRequested)
         {
@@ -1289,6 +1448,9 @@ public partial class ReportSetupDialog : Window
 
     private ReportModel BuildReportModelFromCurrentState()
     {
+        // This method is the single UI -> model boundary. Keeping persistence
+        // mapping here makes Save state, Generate, and future automation use the
+        // same configuration snapshot.
         CommitPendingGridEdits();
 
         var metadata = BuildCurrentMetadata();
@@ -1316,6 +1478,7 @@ public partial class ReportSetupDialog : Window
         reportModel.ReportVariables.DynamicSource.Enabled = !string.IsNullOrWhiteSpace(TxtReportVariablesSql.Text);
         reportModel.ReportVariables.DynamicSource.SqlExpression = TxtReportVariablesSql.Text.Trim();
         reportModel.ReportVariables.Items = BuildReportVariablesFromGrid();
+        reportModel.TablixStyle = BuildTablixStyle();
         UpsertReportVariable(reportModel.ReportVariables, "CompanyName", "CompanyName", reportModel.CompanyInfo.Text);
         reportModel.Memorandum.Enabled = ChkMemorandumEnabled.IsChecked == true;
         reportModel.Memorandum.LayoutMode = ReadReportBandLayoutMode(CmbMemorandumLayoutMode);
@@ -1327,22 +1490,27 @@ public partial class ReportSetupDialog : Window
         reportModel.Memorandum.TextTemplate = TxtMemorandumTemplate.Text.Trim();
         reportModel.Memorandum.LogoImagePath = NormalizeOptional(TxtMemorandumLogo.Text);
         reportModel.Memorandum.ShowVerticalSeparator = ChkMemorandumVerticalLine.IsChecked == true;
+        reportModel.Memorandum.ShowLogoBottomLine = ChkMemorandumLogoBottomLine.IsChecked == true;
         reportModel.Memorandum.ShowBottomLine = ChkMemorandumBottomLine.IsChecked == true;
         reportModel.Memorandum.HeightInCentimeters = ReadPositiveDouble(TxtMemorandumHeight.Text, reportModel.Memorandum.HeightInCentimeters);
+        reportModel.Memorandum.LogoAlignment = ReadEnumComboBox(CmbMemorandumLogoAlignment, MemorandumLogoAlignment.Left);
+        reportModel.Memorandum.TextPlacement = ReadEnumComboBox(CmbMemorandumTextPlacement, MemorandumTextPlacement.BesideLogo);
         reportModel.ReportSummary.Enabled = ChkReportSummaryEnabled.IsChecked == true;
         reportModel.ReportSummary.LayoutMode = ReadReportBandLayoutMode(CmbReportSummaryLayoutMode);
         reportModel.ReportSummary.SubreportPath = NormalizeOptional(TxtReportSummarySubreport.Text);
         reportModel.ReportSummary.SubreportName = BuildSubreportName(reportModel.ReportSummary.SubreportPath);
         reportModel.ReportSummary.SubreportServerPath = NormalizeOptional(TxtReportSummarySubreportServerPath.Text);
         reportModel.ReportSummary.FallbackToInline = ChkReportSummaryFallbackInline.IsChecked == true;
-        reportModel.ReportSummary.TextTemplate = TxtReportSummaryTemplate.Text.Trim();
         reportModel.ReportSummary.ShowTopLine = ChkReportSummaryTopLine.IsChecked == true;
+        reportModel.ReportSummary.ColumnCount = ReadReportSummaryColumnCount();
+        reportModel.ReportSummary.Columns = BuildReportSummaryColumnsFromUi(reportModel.ReportSummary.ColumnCount);
         reportModel.ReportSummary.HeightInCentimeters = ReadPositiveDouble(TxtReportSummaryHeight.Text, reportModel.ReportSummary.HeightInCentimeters);
         reportModel.PageSetup = BuildPageSetup();
         reportModel.PageHeader.Enabled = ChkPageHeaderEnabled.IsChecked == true;
         reportModel.PageHeader.LeftText = TxtHeaderLeft.Text.Trim();
         reportModel.PageHeader.RightText = TxtHeaderRight.Text.Trim();
         reportModel.PageHeader.HeightInCentimeters = ReadPositiveDouble(TxtPageHeaderHeight.Text, reportModel.PageHeader.HeightInCentimeters);
+        reportModel.PageHeader.FontSizeInPoints = ReadPositiveDouble(TxtPageHeaderFontSize.Text, reportModel.PageHeader.FontSizeInPoints);
         reportModel.PageHeader.PrintOnFirstPage = ChkPageHeaderFirstPage.IsChecked == true;
         reportModel.PageFooter.Enabled = ChkPageFooterEnabled.IsChecked == true;
         reportModel.PageFooter.LeftText = TxtFooterLeft.Text.Trim();
@@ -1403,6 +1571,8 @@ public partial class ReportSetupDialog : Window
 
     private void ApplyReportModel(ReportModel model)
     {
+        // This is the inverse model -> UI boundary used by Load state and by the
+        // initial stored procedure inspection result.
         TxtReportName.Text = model.Name;
         TxtAuthor.Text = model.Author ?? string.Empty;
         TxtDescription.Text = model.Description ?? string.Empty;
@@ -1415,6 +1585,7 @@ public partial class ReportSetupDialog : Window
         TxtCompanyEndpoint.Text = model.CompanyInfo.BackendEndpoint ?? string.Empty;
         TxtReportVariablesSql.Text = model.ReportVariables.DynamicSource.SqlExpression;
         ApplyReportVariables(model.ReportVariables.Items);
+        ApplyTablixStyle(model.TablixStyle ?? new TablixStyleConfig());
         ChkMemorandumEnabled.IsChecked = model.Memorandum.Enabled;
         SetReportBandLayoutMode(CmbMemorandumLayoutMode, model.Memorandum.LayoutMode);
         TxtMemorandumSubreport.Text = model.Memorandum.SubreportPath ?? model.Memorandum.SubreportName ?? string.Empty;
@@ -1425,20 +1596,25 @@ public partial class ReportSetupDialog : Window
             : model.Memorandum.TextTemplate;
         TxtMemorandumLogo.Text = model.Memorandum.LogoImagePath ?? string.Empty;
         ChkMemorandumVerticalLine.IsChecked = model.Memorandum.ShowVerticalSeparator;
+        ChkMemorandumLogoBottomLine.IsChecked = model.Memorandum.ShowLogoBottomLine;
         ChkMemorandumBottomLine.IsChecked = model.Memorandum.ShowBottomLine;
         TxtMemorandumHeight.Text = ToUiNumber(model.Memorandum.HeightInCentimeters);
+        SetEnumComboBox(CmbMemorandumLogoAlignment, model.Memorandum.LogoAlignment);
+        SetEnumComboBox(CmbMemorandumTextPlacement, model.Memorandum.TextPlacement);
+        UpdateMemorandumLogoAlignmentAvailability();
         ChkReportSummaryEnabled.IsChecked = model.ReportSummary.Enabled;
         SetReportBandLayoutMode(CmbReportSummaryLayoutMode, model.ReportSummary.LayoutMode);
         TxtReportSummarySubreport.Text = model.ReportSummary.SubreportPath ?? model.ReportSummary.SubreportName ?? string.Empty;
         TxtReportSummarySubreportServerPath.Text = model.ReportSummary.SubreportServerPath ?? model.ReportSummary.SubreportName ?? string.Empty;
         ChkReportSummaryFallbackInline.IsChecked = model.ReportSummary.FallbackToInline;
-        TxtReportSummaryTemplate.Text = model.ReportSummary.TextTemplate;
         ChkReportSummaryTopLine.IsChecked = model.ReportSummary.ShowTopLine;
+        SetReportSummaryColumns(model.ReportSummary);
         TxtReportSummaryHeight.Text = ToUiNumber(model.ReportSummary.HeightInCentimeters);
         ChkPageHeaderEnabled.IsChecked = model.PageHeader.Enabled;
         TxtHeaderLeft.Text = model.PageHeader.LeftText;
         TxtHeaderRight.Text = model.PageHeader.RightText;
         TxtPageHeaderHeight.Text = ToUiNumber(model.PageHeader.HeightInCentimeters);
+        TxtPageHeaderFontSize.Text = ToUiNumber(model.PageHeader.FontSizeInPoints);
         ChkPageHeaderFirstPage.IsChecked = model.PageHeader.PrintOnFirstPage;
         ChkPageFooterEnabled.IsChecked = model.PageFooter.Enabled;
         TxtFooterLeft.Text = model.PageFooter.LeftText;
@@ -1597,6 +1773,201 @@ public partial class ReportSetupDialog : Window
         return Enum.TryParse<ReportBandLayoutMode>(tag, ignoreCase: true, out var mode)
             ? mode
             : ReportBandLayoutMode.Inline;
+    }
+
+    private int ReadReportSummaryColumnCount()
+    {
+        var tag = (CmbReportSummaryColumnCount.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return int.TryParse(tag, out var count) ? Math.Clamp(count, 1, 3) : 1;
+    }
+
+    private TablixStyleConfig BuildTablixStyle()
+        => new()
+        {
+            WidthPercent = ReadPercentOrDefault(TxtTablixWidthPercent.Text, 100.0d),
+            ShadeBaseColor = NormalizeHexColor(TxtTablixShadeBaseColor.Text, "#EDEDED"),
+            BorderColor = NormalizeHexColor(TxtTablixBorderColor.Text, "#A6A6A6"),
+            BorderWidthInPoints = ReadPositiveDouble(TxtTablixBorderWidth.Text, 0.5d),
+            FontFamily = string.IsNullOrWhiteSpace(CmbTablixFontFamily.Text) ? "Arial Narrow" : CmbTablixFontFamily.Text.Trim(),
+            FontColor = NormalizeHexColor(TxtTablixFontColor.Text, "#000000"),
+            FontSizeInPoints = ReadPositiveDouble(TxtTablixFontSize.Text, 9.0d)
+        };
+
+    private void ApplyTablixStyle(TablixStyleConfig style)
+    {
+        TxtTablixWidthPercent.Text = ToUiNumber(style.WidthPercent <= 0 ? 100.0d : Math.Clamp(style.WidthPercent, 1.0d, 100.0d));
+        TxtTablixShadeBaseColor.Text = NormalizeHexColor(style.ShadeBaseColor, "#EDEDED");
+        TxtTablixBorderColor.Text = NormalizeHexColor(style.BorderColor, "#A6A6A6");
+        TxtTablixBorderWidth.Text = ToUiNumber(style.BorderWidthInPoints <= 0 ? 0.5d : style.BorderWidthInPoints);
+        SetTablixFontFamily(style.FontFamily);
+        TxtTablixFontColor.Text = NormalizeHexColor(style.FontColor, "#000000");
+        TxtTablixFontSize.Text = ToUiNumber(style.FontSizeInPoints <= 0 ? 9.0d : style.FontSizeInPoints);
+    }
+
+    private void SetTablixFontFamily(string? fontFamily)
+    {
+        var normalized = string.IsNullOrWhiteSpace(fontFamily) ? "Arial Narrow" : fontFamily;
+        foreach (var item in CmbTablixFontFamily.Items.OfType<string>())
+        {
+            if (string.Equals(item, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                CmbTablixFontFamily.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbTablixFontFamily.Text = normalized;
+    }
+
+    private List<ReportSummaryColumnConfig> BuildReportSummaryColumnsFromUi(int count)
+    {
+        var columns = new[]
+        {
+            new ReportSummaryColumnConfig
+            {
+                TextTemplate = TxtReportSummaryColumn1Template.Text.Trim(),
+                ShowTopLine = ChkReportSummaryColumn1Line.IsChecked == true,
+                WidthPercent = ReadOptionalPercent(TxtReportSummaryColumn1WidthPercent.Text),
+                VerticalAlign = ReadReportSummaryVerticalAlign(CmbReportSummaryColumn1VerticalAlign),
+                PaddingInPoints = ReadPositiveDouble(TxtReportSummaryColumn1Padding.Text, 3.0d)
+            },
+            new ReportSummaryColumnConfig
+            {
+                TextTemplate = TxtReportSummaryColumn2Template.Text.Trim(),
+                ShowTopLine = ChkReportSummaryColumn2Line.IsChecked == true,
+                WidthPercent = ReadOptionalPercent(TxtReportSummaryColumn2WidthPercent.Text),
+                VerticalAlign = ReadReportSummaryVerticalAlign(CmbReportSummaryColumn2VerticalAlign),
+                PaddingInPoints = ReadPositiveDouble(TxtReportSummaryColumn2Padding.Text, 3.0d)
+            },
+            new ReportSummaryColumnConfig
+            {
+                TextTemplate = TxtReportSummaryColumn3Template.Text.Trim(),
+                ShowTopLine = ChkReportSummaryColumn3Line.IsChecked == true,
+                WidthPercent = ReadOptionalPercent(TxtReportSummaryColumn3WidthPercent.Text),
+                VerticalAlign = ReadReportSummaryVerticalAlign(CmbReportSummaryColumn3VerticalAlign),
+                PaddingInPoints = ReadPositiveDouble(TxtReportSummaryColumn3Padding.Text, 3.0d)
+            }
+        };
+
+        return columns.Take(Math.Clamp(count, 1, 3)).ToList();
+    }
+
+    private void SetReportSummaryColumns(ReportSummaryConfig summary)
+    {
+        var count = Math.Clamp(summary.ColumnCount <= 0 ? 1 : summary.ColumnCount, 1, 3);
+        SetComboBoxByTag(CmbReportSummaryColumnCount, count.ToString(CultureInfo.InvariantCulture));
+
+        var columns = summary.Columns ?? new List<ReportSummaryColumnConfig>();
+
+        ApplyReportSummaryColumn(columns.ElementAtOrDefault(0), TxtReportSummaryColumn1Template, ChkReportSummaryColumn1Line, TxtReportSummaryColumn1WidthPercent, CmbReportSummaryColumn1VerticalAlign, TxtReportSummaryColumn1Padding);
+        ApplyReportSummaryColumn(columns.ElementAtOrDefault(1), TxtReportSummaryColumn2Template, ChkReportSummaryColumn2Line, TxtReportSummaryColumn2WidthPercent, CmbReportSummaryColumn2VerticalAlign, TxtReportSummaryColumn2Padding);
+        ApplyReportSummaryColumn(columns.ElementAtOrDefault(2), TxtReportSummaryColumn3Template, ChkReportSummaryColumn3Line, TxtReportSummaryColumn3WidthPercent, CmbReportSummaryColumn3VerticalAlign, TxtReportSummaryColumn3Padding);
+        this.activeReportSummaryTemplateBox = TxtReportSummaryColumn1Template;
+        UpdateReportSummaryColumnVisibility();
+    }
+
+    private static void ApplyReportSummaryColumn(
+        ReportSummaryColumnConfig? column,
+        TextBox templateBox,
+        CheckBox lineCheckBox,
+        TextBox widthPercentBox,
+        ComboBox verticalAlignComboBox,
+        TextBox paddingBox)
+    {
+        templateBox.Text = column?.TextTemplate ?? string.Empty;
+        lineCheckBox.IsChecked = column?.ShowTopLine == true;
+        widthPercentBox.Text = column is not null && column.WidthPercent > 0
+            ? ToUiNumber(column.WidthPercent)
+            : string.Empty;
+        SetComboBoxByTag(verticalAlignComboBox, string.IsNullOrWhiteSpace(column?.VerticalAlign) ? "Top" : column.VerticalAlign);
+        paddingBox.Text = column is not null && column.PaddingInPoints >= 0
+            ? ToUiNumber(column.PaddingInPoints)
+            : "3";
+    }
+
+    private static string ReadReportSummaryVerticalAlign(ComboBox comboBox)
+    {
+        var tag = (comboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return string.Equals(tag, "Middle", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(tag, "Bottom", StringComparison.OrdinalIgnoreCase)
+            ? tag!
+            : "Top";
+    }
+
+    private static void SetComboBoxByTag(ComboBox comboBox, string tag)
+    {
+        foreach (var item in comboBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), tag, StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        comboBox.SelectedIndex = 0;
+    }
+
+    private void ReportSummaryColumnCount_Changed(object sender, SelectionChangedEventArgs e)
+        => UpdateReportSummaryColumnVisibility();
+
+    private void UpdateReportSummaryColumnVisibility()
+    {
+        if (PanelReportSummaryColumn1 is null)
+        {
+            return;
+        }
+
+        var count = ReadReportSummaryColumnCount();
+        PanelReportSummaryColumn1.Visibility = Visibility.Visible;
+        PanelReportSummaryColumn2.Visibility = count >= 2 ? Visibility.Visible : Visibility.Collapsed;
+        PanelReportSummaryColumn3.Visibility = count >= 3 ? Visibility.Visible : Visibility.Collapsed;
+        ColReportSummaryColumn1.Width = new GridLength(1, GridUnitType.Star);
+        ColReportSummaryColumn2.Width = count >= 2
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        ColReportSummaryColumn3.Width = count >= 3
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+    }
+
+    private static T ReadEnumComboBox<T>(ComboBox comboBox, T fallback) where T : struct, Enum
+    {
+        var tag = (comboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return Enum.TryParse<T>(tag, ignoreCase: true, out var value) ? value : fallback;
+    }
+
+    private static void SetEnumComboBox<T>(ComboBox comboBox, T value) where T : struct, Enum
+    {
+        foreach (var item in comboBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), value.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        comboBox.SelectedIndex = 0;
+    }
+
+    private void MemorandumLogoAlignment_Changed(object sender, SelectionChangedEventArgs e)
+        => UpdateMemorandumLogoAlignmentAvailability();
+
+    private void UpdateMemorandumLogoAlignmentAvailability()
+    {
+        // "Beside logo" + "Center" alignment doesn't make geometric sense — text would
+        // have no room on either side. When Center is chosen, force text below.
+        if (CmbMemorandumLogoAlignment is null || CmbMemorandumTextPlacement is null)
+        {
+            return;
+        }
+
+        var alignment = ReadEnumComboBox(CmbMemorandumLogoAlignment, MemorandumLogoAlignment.Left);
+        if (alignment == MemorandumLogoAlignment.Center)
+        {
+            SetEnumComboBox(CmbMemorandumTextPlacement, MemorandumTextPlacement.BelowLogo);
+        }
     }
 
     private static void SetReportBandLayoutMode(ComboBox comboBox, ReportBandLayoutMode mode)
@@ -2298,6 +2669,38 @@ public partial class ReportSetupDialog : Window
         return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) && result >= 0
             ? result
             : fallback;
+    }
+
+    private static double ReadOptionalPercent(string value)
+    {
+        var normalized = value.Replace(',', '.');
+        return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) && result > 0
+            ? Math.Clamp(result, 1.0d, 100.0d)
+            : 0.0d;
+    }
+
+    private static double ReadPercentOrDefault(string value, double fallback)
+    {
+        var normalized = value.Replace(',', '.');
+        return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) && result > 0
+            ? Math.Clamp(result, 1.0d, 100.0d)
+            : fallback;
+    }
+
+    private static string NormalizeHexColor(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        var trimmed = value.Trim();
+        if (!trimmed.StartsWith("#", StringComparison.Ordinal))
+        {
+            trimmed = "#" + trimmed;
+        }
+
+        return Regex.IsMatch(trimmed, "^#[0-9A-Fa-f]{6}$") ? trimmed.ToUpperInvariant() : fallback;
     }
 
     private static string ToUiNumber(double value)

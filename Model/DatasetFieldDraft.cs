@@ -18,6 +18,8 @@ internal sealed class DatasetFieldDraft
 
     public string? AggregateFunction { get; set; }
 
+    public string? TextAlign { get; set; }
+
     public IReadOnlyList<string> AllowedAggregates
         => [string.Empty, .. GetAllowedAggregates(SqlTypeName)];
 
@@ -31,14 +33,15 @@ internal sealed class DatasetFieldDraft
             IncludeInReport = field.IncludeInReport,
             Format = field.Format ?? GetDefaultFormat(field.SqlTypeName),
             GroupLevel = field.GroupLevel,
-            AggregateFunction = field.AggregateFunction
+            AggregateFunction = field.AggregateFunction,
+            TextAlign = field.TextAlign
         };
 
     public DatasetField ToDatasetField()
     {
         var groupLevel = GroupLevel is >= 1 and <= 4 ? GroupLevel : 0;
         var aggregateFunction = groupLevel > 0 ? null : NormalizeAggregateFunction(AggregateFunction, SqlTypeName);
-        return new(Name, SqlTypeName, IsNullable, OrdinalPosition, NormalizeFormat(Format), groupLevel, aggregateFunction, IncludeInReport);
+        return new(Name, SqlTypeName, IsNullable, OrdinalPosition, NormalizeFormat(Format), groupLevel, aggregateFunction, IncludeInReport, NormalizeTextAlign(TextAlign));
     }
 
     public static string? GetDefaultFormat(string sqlTypeName)
@@ -57,6 +60,21 @@ internal sealed class DatasetFieldDraft
 
     private static string? NormalizeFormat(string? format)
         => string.IsNullOrWhiteSpace(format) ? null : format.Trim();
+
+    private static string? NormalizeTextAlign(string? textAlign)
+    {
+        if (string.IsNullOrWhiteSpace(textAlign))
+        {
+            return null;
+        }
+
+        var normalized = textAlign.Trim();
+        return string.Equals(normalized, "Left", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "Center", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "Right", StringComparison.OrdinalIgnoreCase)
+            ? normalized
+            : null;
+    }
 
     private static string? NormalizeAggregateFunction(string? aggregateFunction, string sqlTypeName)
     {

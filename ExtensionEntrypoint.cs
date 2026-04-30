@@ -6,7 +6,7 @@ using sp2rdlGenExtension.Services;
 namespace sp2rdlGenExtension
 {
     /// <summary>
-    /// Extension entrypoint for the VisualStudio.Extensibility extension.
+    /// Registers the VSIX services used by the report generator command.
     /// </summary>
     [VisualStudioContribution]
     internal class ExtensionEntrypoint : Extension
@@ -17,9 +17,9 @@ namespace sp2rdlGenExtension
             Metadata = new(
                     id: "sp2rdlGenExtension.fbe665f0-55f1-4a62-9121-d8f1e9f48fdb",
                     version: this.ExtensionAssemblyVersion,
-                    publisherName: "Publisher name",
-                    displayName: "sp2rdlGenExtension",
-                    description: "Extension description"),
+                    publisherName: "sp2rdl",
+                    displayName: "SP to RDL Generator",
+                    description: "Generates RDL/RDLC reports from SQL Server stored procedures and saved report state."),
         };
 
         /// <inheritdoc />

@@ -26,11 +26,17 @@ internal sealed class RdlBuilder
     private static readonly Regex CssTextAlignRegex = new(
         @"text-align\s*:\s*(?<align>left|center|right)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex ReportSummaryLineMarkerRegex = new(
+        @"(\{Line\}|<hr\s*/?>)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public XDocument Build(ReportModel model)
     {
         ArgumentNullException.ThrowIfNull(model);
 
+        // Replace only the skeleton sections owned by this generator. Empty top-level
+        // elements are deliberately omitted because Report Builder treats them as
+        // invalid in several cases.
         var document = LoadSkeleton();
         var report = document.Root ?? throw new InvalidOperationException("RDL skeleton is missing the Report root element.");
         ValidateParameterDependencies(model);
@@ -42,8 +48,8 @@ internal sealed class RdlBuilder
         {
             ReplaceTopLevelElement(report, embeddedImages);
         }
-        ReplaceTopLevelElement(report, BuildReportParameters(model));
-        ReplaceTopLevelElement(report, BuildReportParametersLayout(model));
+        ReplaceOptionalTopLevelElement(report, Rdl + "ReportParameters", BuildReportParameters(model));
+        ReplaceOptionalTopLevelElement(report, Rdl + "ReportParametersLayout", BuildReportParametersLayout(model));
         ApplyPageSetup(report, model.PageSetup);
         ApplyBody(report, model);
         ApplyHeaderFooter(report, model);
@@ -154,6 +160,8 @@ internal sealed class RdlBuilder
 
     private static DatasetConfig? BuildReportVariablesDataset(ReportModel model)
     {
+        // One shared SQL dataset supplies all dynamic placeholders used by
+        // memorandum, header/footer, and report summary templates.
         if (!model.ReportVariables.DynamicSource.Enabled
             || string.IsNullOrWhiteSpace(model.ReportVariables.DynamicSource.SqlExpression))
         {
@@ -242,8 +250,13 @@ internal sealed class RdlBuilder
                     new XElement(Rdl + "DataField", field.Name),
                     new XElement(Rd + "TypeName", MapClrTypeName(field.SqlTypeName)))));
 
-    private static XElement BuildReportParameters(ReportModel model)
+    private static XElement? BuildReportParameters(ReportModel model)
     {
+        if (model.Parameters.Count == 0)
+        {
+            return null;
+        }
+
         var parametersUsedInQueries = model.Datasets
             .SelectMany(dataset => dataset.ParameterBindings)
             .Select(binding => binding.ReportParameterName.TrimStart('@'))
@@ -341,8 +354,13 @@ internal sealed class RdlBuilder
                         new XElement(Rdl + "Label", string.IsNullOrWhiteSpace(value.Label) ? value.Value : value.Label)))));
     }
 
-    private static XElement BuildReportParametersLayout(ReportModel model)
+    private static XElement? BuildReportParametersLayout(ReportModel model)
     {
+        if (model.Parameters.Count == 0)
+        {
+            return null;
+        }
+
         var orderedParameters = model.Parameters
             .OrderBy(parameter => parameter.OrdinalNumber <= 0 ? int.MaxValue : parameter.OrdinalNumber)
             .ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase)
@@ -413,7 +431,7 @@ internal sealed class RdlBuilder
         page.Element(Rdl + "PageHeader")?.Remove();
         page.Element(Rdl + "PageFooter")?.Remove();
 
-        if (model.PageHeader.Enabled)
+        if (ShouldEmitPageHeader(model.PageHeader))
         {
             page.AddFirst(BuildPageHeader(model));
         }
@@ -526,7 +544,7 @@ internal sealed class RdlBuilder
             return;
         }
 
-        reportItems.Add(BuildTablix(dataset, usableWidth, currentTop, model.BaseFontFamily));
+        reportItems.Add(BuildTablix(dataset, usableWidth, currentTop, model.TablixStyle ?? new TablixStyleConfig()));
         currentTop += EstimateTablixHeight(dataset);
 
         var reportSummary = BuildReportSummaryBand(model, usableWidth, currentTop);
@@ -612,31 +630,113 @@ internal sealed class RdlBuilder
         var height = Math.Max(0.8d, model.Memorandum.HeightInCentimeters);
         var reportItems = new XElement(Rdl + "ReportItems");
         var hasLogo = !string.IsNullOrWhiteSpace(model.Memorandum.LogoImagePath) && File.Exists(model.Memorandum.LogoImagePath);
-        var logoWidth = hasLogo ? Math.Min(2.4d, usableWidth * 0.25d) : 0.0d;
-        var gap = hasLogo ? 0.35d : 0.0d;
-        var separatorLeft = logoWidth + (gap / 2.0d);
-        var textLeft = hasLogo ? logoWidth + gap : 0.0d;
-        var textWidth = Math.Max(1.0d, usableWidth - textLeft);
+
+        var alignment = model.Memorandum.LogoAlignment;
+        var placement = model.Memorandum.TextPlacement;
+
+        // Center logo + text Beside doesn't fit a single row geometry; force text below.
+        if (alignment == MemorandumLogoAlignment.Center && placement == MemorandumTextPlacement.BesideLogo)
+        {
+            placement = MemorandumTextPlacement.BelowLogo;
+        }
+
+        var logoNominalWidth = hasLogo ? Math.Min(2.4d, usableWidth * 0.25d) : 0.0d;
+        var gap = hasLogo && placement == MemorandumTextPlacement.BesideLogo ? 0.35d : 0.0d;
+        var logoNominalHeight = hasLogo
+            ? CalculateMemorandumLogoHeight(height, placement)
+            : 0.0d;
+
+        // Logo Left/Top inside the band rectangle.
+        var logoLeft = 0.0d;
+        var logoTop = 0.1d;
+        if (hasLogo)
+        {
+            switch (alignment)
+            {
+                case MemorandumLogoAlignment.Center:
+                    logoLeft = Math.Max(0.0d, (usableWidth - logoNominalWidth) / 2.0d);
+                    break;
+                case MemorandumLogoAlignment.Right:
+                    logoLeft = Math.Max(0.0d, usableWidth - logoNominalWidth);
+                    break;
+                default:
+                    logoLeft = 0.0d;
+                    break;
+            }
+        }
+
+        // Text frame depends on placement.
+        double textLeft;
+        double textTop;
+        double textWidth;
+        double textHeight;
+        double separatorLeft = 0.0d;
+        double separatorTop = 0.1d;
+        double separatorHeight = 0.0d;
+        var showVerticalSeparator = false;
+
+        if (!hasLogo || placement == MemorandumTextPlacement.BelowLogo)
+        {
+            textLeft = 0.0d;
+            textTop = hasLogo ? logoTop + logoNominalHeight + 0.1d : 0.0d;
+            textWidth = usableWidth;
+            textHeight = Math.Max(0.4d, height - textTop - 0.1d);
+        }
+        else
+        {
+            // BesideLogo with Left or Right alignment.
+            textTop = 0.0d;
+            textHeight = Math.Max(0.4d, height - 0.15d);
+            if (alignment == MemorandumLogoAlignment.Right)
+            {
+                textLeft = 0.0d;
+                textWidth = Math.Max(1.0d, logoLeft - gap);
+                separatorLeft = Math.Max(0.0d, logoLeft - (gap / 2.0d));
+            }
+            else
+            {
+                textLeft = logoNominalWidth + gap;
+                textWidth = Math.Max(1.0d, usableWidth - textLeft);
+                separatorLeft = logoNominalWidth + (gap / 2.0d);
+            }
+
+            separatorTop = 0.1d;
+            separatorHeight = Math.Max(0.4d, height - 0.25d);
+            showVerticalSeparator = model.Memorandum.ShowVerticalSeparator;
+        }
 
         if (hasLogo)
         {
             reportItems.Add(BuildImage(
                 "sp2rdlMemorandumLogo",
                 GetMemorandumLogoImageName(),
-                "0cm",
-                "0.1cm",
-                ToCentimeters(logoWidth),
-                ToCentimeters(Math.Max(0.4d, height - 0.3d))));
+                ToCentimeters(logoLeft),
+                ToCentimeters(logoTop),
+                ToCentimeters(logoNominalWidth),
+                ToCentimeters(logoNominalHeight)));
         }
 
-        if (hasLogo && model.Memorandum.ShowVerticalSeparator)
+        if (showVerticalSeparator)
         {
             reportItems.Add(BuildLine(
                 "sp2rdlMemorandumVerticalLine",
                 ToCentimeters(separatorLeft),
-                "0.1cm",
+                ToCentimeters(separatorTop),
                 "0cm",
-                ToCentimeters(Math.Max(0.4d, height - 0.25d))));
+                ToCentimeters(separatorHeight)));
+        }
+
+        if (hasLogo && model.Memorandum.ShowLogoBottomLine)
+        {
+            var logoBottomLineLeft = placement == MemorandumTextPlacement.BelowLogo ? 0.0d : logoLeft;
+            var logoBottomLineWidth = placement == MemorandumTextPlacement.BelowLogo ? usableWidth : logoNominalWidth;
+            var logoBottomLineTop = Math.Min(height - 0.05d, logoTop + logoNominalHeight + 0.05d);
+            reportItems.Add(BuildLine(
+                "sp2rdlMemorandumLogoBottomLine",
+                ToCentimeters(Math.Max(0.0d, logoBottomLineLeft)),
+                ToCentimeters(Math.Max(0.0d, logoBottomLineTop)),
+                ToCentimeters(Math.Max(0.2d, logoBottomLineWidth)),
+                "0cm"));
         }
 
         var memorandumTemplate = PrepareHtmlTemplateForRdl(model.Memorandum.TextTemplate);
@@ -644,9 +744,9 @@ internal sealed class RdlBuilder
             "sp2rdlMemorandumText",
             BuildTemplateExpression(memorandumTemplate.Html, model),
             ToCentimeters(textLeft),
-            "0cm",
+            ToCentimeters(textTop),
             ToCentimeters(textWidth),
-            ToCentimeters(Math.Max(0.4d, height - 0.15d)),
+            ToCentimeters(textHeight),
             model.BaseFontFamily,
             memorandumTemplate.TextAlign));
 
@@ -663,6 +763,22 @@ internal sealed class RdlBuilder
         return BuildBandRectangle("sp2rdlMemorandum", reportItems, usableWidth, top, height);
     }
 
+    private static double CalculateMemorandumLogoHeight(double bandHeight, MemorandumTextPlacement placement)
+    {
+        if (placement == MemorandumTextPlacement.BesideLogo)
+        {
+            return Math.Max(0.4d, bandHeight - 0.3d);
+        }
+
+        const double topPadding = 0.1d;
+        const double logoTextGap = 0.1d;
+        const double bottomPadding = 0.1d;
+        const double minimumTextHeight = 0.6d;
+        var availableForLogo = bandHeight - topPadding - logoTextGap - bottomPadding - minimumTextHeight;
+        var preferredLogoHeight = Math.Min(1.2d, bandHeight * 0.45d);
+        return Math.Max(0.35d, Math.Min(preferredLogoHeight, availableForLogo));
+    }
+
     private static XElement BuildInlineReportSummary(ReportModel model, double usableWidth, double top)
     {
         var height = Math.Max(0.6d, model.ReportSummary.HeightInCentimeters);
@@ -673,19 +789,172 @@ internal sealed class RdlBuilder
             reportItems.Add(BuildLine("sp2rdlReportSummaryTopLine", "0cm", "0cm", ToCentimeters(usableWidth), "0cm"));
         }
 
-        var summaryTemplate = PrepareHtmlTemplateForRdl(model.ReportSummary.TextTemplate);
-        reportItems.Add(BuildPositionedHtmlTextbox(
-            "sp2rdlReportSummaryText",
-            BuildTemplateExpression(summaryTemplate.Html, model),
-            "0cm",
-            ToCentimeters(textTop),
-            ToCentimeters(usableWidth),
-            ToCentimeters(Math.Max(0.4d, height - textTop)),
-            model.BaseFontFamily,
-            summaryTemplate.TextAlign));
+        var columns = GetReportSummaryColumns(model.ReportSummary);
+        var columnTop = textTop;
+        if (columns.Count > 0)
+        {
+            AddReportSummaryColumns(reportItems, columns, model, usableWidth, height, columnTop);
+        }
 
         return BuildBandRectangle("sp2rdlReportSummary", reportItems, usableWidth, top, height);
     }
+
+    private static List<ReportSummaryColumnConfig> GetReportSummaryColumns(ReportSummaryConfig summary)
+    {
+        var count = Math.Clamp(summary.ColumnCount <= 0 ? 1 : summary.ColumnCount, 1, 3);
+        var columns = (summary.Columns ?? new List<ReportSummaryColumnConfig>())
+            .Take(count)
+            .ToList();
+
+        while (columns.Count < count)
+        {
+            columns.Add(new ReportSummaryColumnConfig());
+        }
+
+        return columns;
+    }
+
+    private static void AddReportSummaryColumns(
+        XElement reportItems,
+        IReadOnlyList<ReportSummaryColumnConfig> columns,
+        ReportModel model,
+        double usableWidth,
+        double bandHeight,
+        double top)
+    {
+        var count = columns.Count;
+        var gap = count > 1 ? 0.35d : 0.0d;
+        var availableWidth = Math.Max(1.0d, usableWidth - gap * (count - 1));
+        var columnWidths = CalculateReportSummaryColumnWidths(columns, availableWidth);
+        var columnHeight = Math.Max(0.4d, bandHeight - top - 0.1d);
+        var left = 0.0d;
+
+        for (var index = 0; index < count; index++)
+        {
+            var column = columns[index];
+            var columnWidth = columnWidths[index];
+            if (!column.ShowTopLine && string.IsNullOrWhiteSpace(column.TextTemplate))
+            {
+                left += columnWidth + gap;
+                continue;
+            }
+
+            if (column.ShowTopLine)
+            {
+                reportItems.Add(BuildLine(
+                    $"sp2rdlReportSummaryColumn{index + 1}Line",
+                    ToCentimeters(left),
+                    ToCentimeters(top),
+                    ToCentimeters(columnWidth),
+                    "0cm"));
+            }
+
+            var templateTop = top + (column.ShowTopLine ? 0.12d : 0.0d);
+            AddReportSummaryColumnTemplate(
+                reportItems,
+                $"sp2rdlReportSummaryColumn{index + 1}",
+                column.TextTemplate,
+                model,
+                left,
+                templateTop,
+                columnWidth,
+                Math.Max(0.3d, columnHeight - (templateTop - top)),
+                column.VerticalAlign,
+                column.PaddingInPoints);
+            left += columnWidth + gap;
+        }
+    }
+
+    private static List<double> CalculateReportSummaryColumnWidths(
+        IReadOnlyList<ReportSummaryColumnConfig> columns,
+        double availableWidth)
+    {
+        var percentages = columns
+            .Select(column => column.WidthPercent > 0 ? column.WidthPercent : 0.0d)
+            .ToList();
+        var totalPercent = percentages.Sum();
+        if (totalPercent <= 0)
+        {
+            return columns.Select(_ => availableWidth / columns.Count).ToList();
+        }
+
+        return percentages
+            .Select(percent => availableWidth * (percent > 0 ? percent : 0.0d) / totalPercent)
+            .ToList();
+    }
+
+    private static void AddReportSummaryColumnTemplate(
+        XElement reportItems,
+        string namePrefix,
+        string templateText,
+        ReportModel model,
+        double left,
+        double top,
+        double width,
+        double height,
+        string verticalAlign,
+        double paddingInPoints)
+    {
+        var parts = ReportSummaryLineMarkerRegex.Split(templateText ?? string.Empty)
+            .Where(part => !string.IsNullOrEmpty(part))
+            .ToList();
+        if (parts.Count == 0)
+        {
+            return;
+        }
+
+        var lineCount = parts.Count(part => ReportSummaryLineMarkerRegex.IsMatch(part));
+        var textCount = Math.Max(1, parts.Count - lineCount);
+        var lineGapHeight = 0.18d;
+        var paddingCm = PointsToCentimeters(Math.Max(0.0d, paddingInPoints));
+        var contentLeft = left + paddingCm;
+        var contentTop = top + paddingCm;
+        var contentWidth = Math.Max(0.2d, width - paddingCm * 2.0d);
+        var contentHeight = Math.Max(0.2d, height - paddingCm * 2.0d);
+        var textHeight = Math.Max(0.25d, (contentHeight - lineCount * lineGapHeight) / textCount);
+        var currentTop = contentTop;
+        var textIndex = 1;
+        var lineIndex = 1;
+
+        foreach (var part in parts)
+        {
+            if (ReportSummaryLineMarkerRegex.IsMatch(part))
+            {
+                currentTop += Math.Max(0.03d, lineGapHeight / 2.0d);
+                reportItems.Add(BuildLine(
+                    $"{namePrefix}TemplateLine{lineIndex++}",
+                    ToCentimeters(contentLeft),
+                    ToCentimeters(currentTop),
+                    ToCentimeters(contentWidth),
+                    "0cm"));
+                currentTop += Math.Max(0.03d, lineGapHeight / 2.0d);
+                continue;
+            }
+
+            var template = PrepareHtmlTemplateForRdl(part.Trim());
+            reportItems.Add(BuildPositionedHtmlTextbox(
+                $"{namePrefix}Text{textIndex++}",
+                BuildTemplateExpression(template.Html, model),
+                ToCentimeters(contentLeft),
+                ToCentimeters(currentTop),
+                ToCentimeters(contentWidth),
+                ToCentimeters(textHeight),
+                model.BaseFontFamily,
+                template.TextAlign,
+                NormalizeVerticalAlign(verticalAlign),
+                0.0d));
+            currentTop += textHeight;
+        }
+    }
+
+    private static double PointsToCentimeters(double points)
+        => points * 2.54d / 72.0d;
+
+    private static string NormalizeVerticalAlign(string? verticalAlign)
+        => string.Equals(verticalAlign, "Middle", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(verticalAlign, "Bottom", StringComparison.OrdinalIgnoreCase)
+            ? verticalAlign!
+            : "Top";
 
     private static XElement BuildBandRectangle(string name, XElement reportItems, double usableWidth, double top, double height)
         => new(Rdl + "Rectangle",
@@ -727,7 +996,7 @@ internal sealed class RdlBuilder
         return new XElement(Rdl + "Subreport",
             new XAttribute("Name", name),
             new XElement(Rdl + "ReportName", reportName),
-            BuildSubreportParameters(parameterMappings, model),
+            BuildSubreportParameters(parameterMappings, subreportName, subreportPath, model),
             new XElement(Rdl + "Top", ToCentimeters(top)),
             new XElement(Rdl + "Left", "0cm"),
             new XElement(Rdl + "Height", ToCentimeters(Math.Max(0.4d, height))),
@@ -739,32 +1008,49 @@ internal sealed class RdlBuilder
 
     private static string? ResolveSubreportReportName(string? subreportServerPath, string? subreportName, string? subreportPath)
     {
-        if (!string.IsNullOrWhiteSpace(subreportServerPath))
+        // <ReportName> must resolve at design time (Report Builder / Power BI Report Builder
+        // look for a sibling .rdl in the same project) and at runtime on the server.
+        // A server-absolute value like "/Memorandum" breaks design-time lookup, so prefer
+        // the local name/file. The server path is informational and used only as a last
+        // resort, with leading slashes stripped so SSRS treats it as a relative reference.
+        var localName = NormalizeSubreportReference(subreportName)
+            ?? NormalizeSubreportReference(subreportPath);
+        if (!string.IsNullOrWhiteSpace(localName))
         {
-            return subreportServerPath.Trim();
+            return localName;
         }
 
-        if (!string.IsNullOrWhiteSpace(subreportName))
-        {
-            return subreportName.Trim();
-        }
-
-        return NormalizeSubreportReference(subreportPath);
+        return NormalizeSubreportReference(subreportServerPath?.TrimStart('/', '\\'));
     }
 
     private static XElement? BuildSubreportParameters(
         IReadOnlyList<SubreportParameterMapping> parameterMappings,
+        string? subreportName,
+        string? subreportPath,
         ReportModel model)
     {
-        var mappings = model.Parameters
-            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
-            .Select(parameter => new SubreportParameterMapping
-            {
-                SubreportParameterName = parameter.Name.TrimStart('@'),
-                SourceKind = SubreportParameterSourceKind.ReportParameter,
-                SourceName = parameter.Name.TrimStart('@')
-            })
-            .Concat(parameterMappings.Where(mapping => !string.IsNullOrWhiteSpace(mapping.SubreportParameterName)))
+        // SSRS rejects parameters that the subreport does not declare. When a local
+        // subreport file can be inspected, auto-forward only the matching parent
+        // parameters. Explicit mappings are still honored and override auto mappings.
+        var declaredSubreportParameters = TryReadSubreportParameterNames(subreportName, subreportPath, model);
+        var autoMappings = declaredSubreportParameters is null
+            ? Enumerable.Empty<SubreportParameterMapping>()
+            : model.Parameters
+                .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
+                .Where(parameter => declaredSubreportParameters.Contains(parameter.Name.TrimStart('@')))
+                .Select(parameter => new SubreportParameterMapping
+                {
+                    SubreportParameterName = parameter.Name.TrimStart('@'),
+                    SourceKind = SubreportParameterSourceKind.ReportParameter,
+                    SourceName = parameter.Name.TrimStart('@')
+                });
+
+        var mappings = autoMappings
+            .Concat(parameterMappings
+            .Where(mapping => !string.IsNullOrWhiteSpace(mapping.SubreportParameterName))
+                .Where(mapping =>
+                    declaredSubreportParameters is null
+                    || declaredSubreportParameters.Contains(mapping.SubreportParameterName.TrimStart('@'))))
             .GroupBy(mapping => mapping.SubreportParameterName.TrimStart('@'), StringComparer.OrdinalIgnoreCase)
             .Select(group => group.Last())
             .ToList();
@@ -797,6 +1083,83 @@ internal sealed class RdlBuilder
             _ => string.Empty
         };
 
+    private static HashSet<string>? TryReadSubreportParameterNames(string? subreportName, string? subreportPath, ReportModel model)
+    {
+        foreach (var candidate in EnumerateSubreportFileCandidates(subreportName, subreportPath, model))
+        {
+            try
+            {
+                if (!File.Exists(candidate))
+                {
+                    continue;
+                }
+
+                var document = XDocument.Load(candidate);
+                var report = document.Root;
+                if (report is null)
+                {
+                    continue;
+                }
+
+                var ns = report.Name.Namespace;
+                return report
+                    .Descendants(ns + "ReportParameter")
+                    .Select(parameter => parameter.Attribute("Name")?.Value)
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Select(name => name!.TrimStart('@'))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                // If the subreport cannot be inspected, avoid auto-forwarding to keep
+                // the generated main report valid. Explicit mappings remain available.
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateSubreportFileCandidates(string? subreportName, string? subreportPath, ReportModel model)
+    {
+        var outputDirectory = string.IsNullOrWhiteSpace(model.OutputPath)
+            ? null
+            : Path.GetDirectoryName(model.OutputPath);
+
+        foreach (var value in new[] { subreportPath, subreportName })
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            var trimmed = value.Trim();
+            foreach (var candidate in ExpandSubreportCandidate(trimmed, outputDirectory))
+            {
+                yield return candidate;
+            }
+        }
+    }
+
+    private static IEnumerable<string> ExpandSubreportCandidate(string value, string? outputDirectory)
+    {
+        var paths = new List<string> { value };
+        if (string.IsNullOrWhiteSpace(Path.GetExtension(value)))
+        {
+            paths.Add(value + ".rdl");
+            paths.Add(value + ".rdlc");
+        }
+
+        foreach (var path in paths)
+        {
+            yield return path;
+
+            if (!Path.IsPathRooted(path) && !string.IsNullOrWhiteSpace(outputDirectory))
+            {
+                yield return Path.Combine(outputDirectory, path);
+            }
+        }
+    }
+
     private static string? NormalizeSubreportReference(string? subreportPath)
     {
         if (string.IsNullOrWhiteSpace(subreportPath))
@@ -825,7 +1188,7 @@ internal sealed class RdlBuilder
         return Math.Max(1.25d, rowCount * 0.6d);
     }
 
-    private static XElement BuildTablix(DatasetConfig dataset, double usableWidth, double top, string baseFontFamily)
+    private static XElement BuildTablix(DatasetConfig dataset, double usableWidth, double top, TablixStyleConfig tablixStyle)
     {
         var fields = dataset.Fields
             .OrderBy(field => field.OrdinalPosition <= 0 ? int.MaxValue : field.OrdinalPosition)
@@ -858,29 +1221,32 @@ internal sealed class RdlBuilder
         var aggregateFields = detailFields
             .Where(field => !string.IsNullOrWhiteSpace(field.AggregateFunction))
             .ToList();
-        var columnWidths = CalculateTablixColumnWidths(detailFields, usableWidth);
+        // The configured percentage controls the whole tablix; individual columns
+        // keep the automatic type-based distribution inside that width.
+        var tablixWidth = GetTablixWidth(usableWidth, tablixStyle);
+        var columnWidths = CalculateTablixColumnWidths(detailFields, tablixWidth);
         var tablixRows = new List<XElement>
         {
-            BuildTablixRow(detailFields, "Header", "0.65cm", field => field.Name, true)
+            BuildTablixRow(detailFields, "Header", "0.65cm", field => field.Name, true, tablixStyle)
         };
 
         foreach (var group in groups)
         {
             tablixRows.Add(BuildSpacerRow(detailFields, $"Group{group.Level}HeaderSpacer"));
-            tablixRows.Add(BuildGroupHeaderRow(detailFields, group));
+            tablixRows.Add(BuildGroupHeaderRow(detailFields, group, tablixStyle));
         }
 
-        tablixRows.Add(BuildTablixRow(detailFields, "Detail", "0.6cm", field => $"=Fields!{field.Name}.Value", false));
+        tablixRows.Add(BuildTablixRow(detailFields, "Detail", "0.6cm", field => $"=Fields!{field.Name}.Value", false, tablixStyle));
 
         foreach (var group in groups.AsEnumerable().Reverse())
         {
-            var style = GetGroupVisualStyle(group.Level);
-            tablixRows.Add(BuildAggregateRow(detailFields, aggregateFields, $"sp2rdlGroup{group.Level}", BuildGroupSubtotalLabel(group), style.BackgroundColor, style.FontStyle));
+            var style = GetGroupVisualStyle(group.Level, tablixStyle);
+            tablixRows.Add(BuildAggregateRow(detailFields, aggregateFields, $"sp2rdlGroup{group.Level}", BuildGroupSubtotalLabel(group), style.BackgroundColor, style.FontStyle, tablixStyle));
         }
 
         if (aggregateFields.Count > 0)
         {
-            tablixRows.Add(BuildAggregateRow(detailFields, aggregateFields, null, "Ukupno", GrandTotalBackgroundColor, fontStyle: null));
+            tablixRows.Add(BuildAggregateRow(detailFields, aggregateFields, null, "Ukupno", GetGrandTotalBackgroundColor(tablixStyle), fontStyle: null, tablixStyle));
         }
 
         return new XElement(Rdl + "Tablix",
@@ -897,7 +1263,7 @@ internal sealed class RdlBuilder
             new XElement(Rdl + "Top", ToCentimeters(top)),
             new XElement(Rdl + "Left", "0cm"),
             new XElement(Rdl + "Height", ToCentimeters(Math.Max(1.25d, tablixRows.Count * 0.6d))),
-            new XElement(Rdl + "Width", ToCentimeters(usableWidth)),
+            new XElement(Rdl + "Width", ToCentimeters(tablixWidth)),
             new XElement(Rdl + "Style",
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "None"))));
@@ -920,9 +1286,9 @@ internal sealed class RdlBuilder
                     .ToList()))
             .ToList();
 
-    private static XElement BuildGroupHeaderRow(IReadOnlyList<DatasetField> columns, TablixGroup group)
+    private static XElement BuildGroupHeaderRow(IReadOnlyList<DatasetField> columns, TablixGroup group, TablixStyleConfig tablixStyle)
     {
-        var style = GetGroupVisualStyle(group.Level);
+        var style = GetGroupVisualStyle(group.Level, tablixStyle);
         var cellContents = new XElement(Rdl + "CellContents",
             BuildCellTextbox(
                 $"sp2rdlGroup{group.Level}Header1",
@@ -934,7 +1300,8 @@ internal sealed class RdlBuilder
                 fontWeight: "Bold",
                 fontStyle: style.FontStyle,
                 horizontalOnlyBorders: true,
-                textAlignOverride: "Left"));
+                textAlignOverride: "Left",
+                tablixStyle: tablixStyle));
 
         if (columns.Count > 1)
         {
@@ -969,8 +1336,11 @@ internal sealed class RdlBuilder
         string? scopeName,
         string label,
         string backgroundColor,
-        string? fontStyle)
+        string? fontStyle,
+        TablixStyleConfig tablixStyle)
     {
+        // Keep aggregate values visible even when the first visible column also has
+        // an aggregate; the label spans only columns before the first aggregate.
         var rowName = MakeRdlName(label);
         var aggregateFieldNames = aggregateFields
             .Select(field => field.Name)
@@ -1003,7 +1373,8 @@ internal sealed class RdlBuilder
                         textAlign: "Left",
                         backgroundColor: backgroundColor,
                         fontWeight: "Bold",
-                        fontStyle: fontStyle));
+                        fontStyle: fontStyle,
+                        tablixStyle: tablixStyle));
                 if (labelSpan > 1)
                 {
                     cellContents.Add(new XElement(Rdl + "ColSpan", labelSpan.ToString(CultureInfo.InvariantCulture)));
@@ -1029,7 +1400,8 @@ internal sealed class RdlBuilder
                         GetFieldTextAlign(field),
                         backgroundColor,
                         "Bold",
-                        fontStyle))));
+                        fontStyle,
+                        tablixStyle: tablixStyle))));
             index++;
         }
 
@@ -1064,15 +1436,27 @@ internal sealed class RdlBuilder
         };
     }
 
-    private static GroupVisualStyle GetGroupVisualStyle(int level)
+    private static GroupVisualStyle GetGroupVisualStyle(int level, TablixStyleConfig tablixStyle)
         => level switch
         {
-            1 => new("#D4D4D4", null),
-            2 => new("#DEDEDE", "Italic"),
-            3 => new("#E8E8E8", null),
-            4 => new("#F2F2F2", "Italic"),
-            _ => new("#F2F2F2", null)
+            1 => new(ShiftColor(tablixStyle.ShadeBaseColor, -0.10d, "#D4D4D4"), null),
+            2 => new(ShiftColor(tablixStyle.ShadeBaseColor, -0.06d, "#DEDEDE"), "Italic"),
+            3 => new(ShiftColor(tablixStyle.ShadeBaseColor, -0.02d, "#E8E8E8"), null),
+            4 => new(ShiftColor(tablixStyle.ShadeBaseColor, 0.03d, "#F2F2F2"), "Italic"),
+            _ => new(ShiftColor(tablixStyle.ShadeBaseColor, 0.03d, "#F2F2F2"), null)
         };
+
+    private static string GetHeaderBackgroundColor(TablixStyleConfig tablixStyle)
+        => NormalizeHexColor(tablixStyle.ShadeBaseColor, HeaderBackgroundColor);
+
+    private static string GetGrandTotalBackgroundColor(TablixStyleConfig tablixStyle)
+        => ShiftColor(tablixStyle.ShadeBaseColor, -0.20d, GrandTotalBackgroundColor);
+
+    private static double GetTablixWidth(double usableWidth, TablixStyleConfig tablixStyle)
+    {
+        var percent = tablixStyle.WidthPercent <= 0 ? 100.0d : Math.Clamp(tablixStyle.WidthPercent, 1.0d, 100.0d);
+        return Math.Max(1.0d, usableWidth * percent / 100.0d);
+    }
 
     private static IReadOnlyList<double> CalculateTablixColumnWidths(IReadOnlyList<DatasetField> fields, double usableWidth)
     {
@@ -1081,6 +1465,8 @@ internal sealed class RdlBuilder
             return [];
         }
 
+        // Start with type-aware widths, then stretch mostly text columns so the
+        // tablix fills its configured width without letting one long field dominate.
         var desiredWidths = fields.Select(GetDesiredColumnWidth).ToList();
         var minimumWidths = fields.Select(GetMinimumColumnWidth).ToList();
         var maximumWidths = fields.Select(GetMaximumColumnWidth).ToList();
@@ -1507,15 +1893,17 @@ internal sealed class RdlBuilder
         string rowName,
         string height,
         Func<DatasetField, string> valueFactory,
-        bool isHeader)
+        bool isHeader,
+        TablixStyleConfig tablixStyle)
         => BuildCustomTablixRow(
             fields,
             rowName,
             height,
             (field, _) => valueFactory(field),
             isHeader,
-            isHeader ? HeaderBackgroundColor : null,
-            isHeader ? "Bold" : null);
+            isHeader ? GetHeaderBackgroundColor(tablixStyle) : null,
+            isHeader ? "Bold" : null,
+            tablixStyle: tablixStyle);
 
     private static XElement BuildCustomTablixRow(
         IReadOnlyList<DatasetField> fields,
@@ -1527,7 +1915,8 @@ internal sealed class RdlBuilder
         string? fontWeight,
         string? fontStyle = null,
         bool horizontalOnlyBorders = false,
-        bool noBorders = false)
+        bool noBorders = false,
+        TablixStyleConfig? tablixStyle = null)
         => new(Rdl + "TablixRow",
             new XElement(Rdl + "Height", height),
             new XElement(Rdl + "TablixCells",
@@ -1543,7 +1932,8 @@ internal sealed class RdlBuilder
                             fontWeight,
                             fontStyle,
                             horizontalOnlyBorders,
-                            noBorders))))));
+                            noBorders,
+                            tablixStyle: tablixStyle))))));
 
     private static XElement BuildCellTextbox(
         string name,
@@ -1556,11 +1946,14 @@ internal sealed class RdlBuilder
         string? fontStyle = null,
         bool horizontalOnlyBorders = false,
         bool noBorders = false,
-        string? textAlignOverride = null)
+        string? textAlignOverride = null,
+        TablixStyleConfig? tablixStyle = null)
     {
+        tablixStyle ??= new TablixStyleConfig();
         var textRunStyle = new XElement(Rdl + "Style",
-            new XElement(Rdl + "FontFamily", TablixFontFamily),
-            new XElement(Rdl + "FontSize", "9pt"));
+            new XElement(Rdl + "FontFamily", string.IsNullOrWhiteSpace(tablixStyle.FontFamily) ? TablixFontFamily : tablixStyle.FontFamily),
+            new XElement(Rdl + "FontSize", ToPoints(tablixStyle.FontSizeInPoints <= 0 ? 9.0d : tablixStyle.FontSizeInPoints)),
+            new XElement(Rdl + "Color", NormalizeHexColor(tablixStyle.FontColor, "#000000")));
         if (isHeader || !string.IsNullOrWhiteSpace(fontWeight))
         {
             textRunStyle.Add(new XElement(Rdl + "FontWeight", string.IsNullOrWhiteSpace(fontWeight) ? "Bold" : fontWeight));
@@ -1586,10 +1979,10 @@ internal sealed class RdlBuilder
                         new XElement(Rdl + "TextRun",
                             new XElement(Rdl + "Value", value),
                             textRunStyle)),
-                    new XElement(Rdl + "Style",
-                        new XElement(Rdl + "TextAlign", textAlignOverride ?? (isHeader ? "Center" : textAlign))))),
+                new XElement(Rdl + "Style",
+                    new XElement(Rdl + "TextAlign", textAlignOverride ?? (isHeader ? "Center" : textAlign))))),
             new XElement(Rdl + "Style",
-                BuildCellBorders(horizontalOnlyBorders, noBorders),
+                BuildCellBorders(horizontalOnlyBorders, noBorders, tablixStyle),
                 string.IsNullOrWhiteSpace(backgroundColor)
                     ? null
                     : new XElement(Rdl + "BackgroundColor", backgroundColor),
@@ -1599,8 +1992,10 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "PaddingBottom", "2pt")));
     }
 
-    private static object[] BuildCellBorders(bool horizontalOnlyBorders, bool noBorders)
+    private static object[] BuildCellBorders(bool horizontalOnlyBorders, bool noBorders, TablixStyleConfig tablixStyle)
     {
+        var borderColor = NormalizeHexColor(tablixStyle.BorderColor, ReportLineColor);
+        var borderWidth = ToPoints(tablixStyle.BorderWidthInPoints <= 0 ? 0.5d : tablixStyle.BorderWidthInPoints);
         if (noBorders)
         {
             return
@@ -1616,8 +2011,8 @@ internal sealed class RdlBuilder
             [
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "Solid"),
-                    new XElement(Rdl + "Color", ReportLineColor),
-                    new XElement(Rdl + "Width", ReportLineWidth))
+                    new XElement(Rdl + "Color", borderColor),
+                    new XElement(Rdl + "Width", borderWidth))
             ];
         }
 
@@ -1627,25 +2022,32 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "Style", "None")),
             new XElement(Rdl + "TopBorder",
                 new XElement(Rdl + "Style", "Solid"),
-                new XElement(Rdl + "Color", ReportLineColor),
-                new XElement(Rdl + "Width", ReportLineWidth)),
+                new XElement(Rdl + "Color", borderColor),
+                new XElement(Rdl + "Width", borderWidth)),
             new XElement(Rdl + "BottomBorder",
                 new XElement(Rdl + "Style", "Solid"),
-                new XElement(Rdl + "Color", ReportLineColor),
-                new XElement(Rdl + "Width", ReportLineWidth)),
+                new XElement(Rdl + "Color", borderColor),
+                new XElement(Rdl + "Width", borderWidth)),
             new XElement(Rdl + "LeftBorder",
                 new XElement(Rdl + "Style", "Solid"),
-                new XElement(Rdl + "Color", ReportLineColor),
-                new XElement(Rdl + "Width", ReportLineWidth)),
+                new XElement(Rdl + "Color", borderColor),
+                new XElement(Rdl + "Width", borderWidth)),
             new XElement(Rdl + "RightBorder",
                 new XElement(Rdl + "Style", "Solid"),
-                new XElement(Rdl + "Color", ReportLineColor),
-                new XElement(Rdl + "Width", ReportLineWidth))
+                new XElement(Rdl + "Color", borderColor),
+                new XElement(Rdl + "Width", borderWidth))
         ];
     }
 
     private static string GetFieldTextAlign(DatasetField field)
     {
+        if (string.Equals(field.TextAlign, "Left", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(field.TextAlign, "Center", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(field.TextAlign, "Right", StringComparison.OrdinalIgnoreCase))
+        {
+            return field.TextAlign!;
+        }
+
         var normalized = NormalizeSqlType(field.SqlTypeName);
         return normalized switch
         {
@@ -1655,18 +2057,35 @@ internal sealed class RdlBuilder
         };
     }
 
+    private static bool ShouldEmitPageHeader(PageHeaderConfig header)
+    {
+        if (!header.Enabled)
+        {
+            return false;
+        }
+
+        // SSRS reserves the page-header slot regardless of PrintOnFirstPage/LastPage.
+        // To avoid an empty band leaving a white strip on every page, omit the
+        // <PageHeader> element entirely when the user left both texts blank.
+        return !string.IsNullOrWhiteSpace(header.LeftText)
+            || !string.IsNullOrWhiteSpace(header.RightText);
+    }
+
     private static XElement BuildPageHeader(ReportModel model)
     {
         var header = model.PageHeader;
-        var title = model.ReportTitle;
         var usableWidth = GetUsablePageWidth(model.PageSetup);
         var gap = Math.Min(0.5d, usableWidth / 20d);
         var textboxWidth = Math.Max(1.0d, (usableWidth - gap) / 2d);
         var leftText = header.LeftText;
         var rightText = header.RightText;
+        var headerHeight = Math.Max(0.4d, header.HeightInCentimeters);
+        // Fill the band so SSRS doesn't leave dead space below the textboxes.
+        var textboxHeight = Math.Max(0.3d, headerHeight - 0.05d);
+        var fontSize = $"{header.FontSizeInPoints.ToString("0.#", CultureInfo.InvariantCulture)}pt";
 
         return new XElement(Rdl + "PageHeader",
-            new XElement(Rdl + "Height", ToCentimeters(header.HeightInCentimeters)),
+            new XElement(Rdl + "Height", ToCentimeters(headerHeight)),
             new XElement(Rdl + "PrintOnFirstPage", header.PrintOnFirstPage.ToString().ToLowerInvariant()),
             new XElement(Rdl + "PrintOnLastPage", header.PrintOnLastPage.ToString().ToLowerInvariant()),
             new XElement(Rdl + "ReportItems",
@@ -1676,18 +2095,20 @@ internal sealed class RdlBuilder
                     "0cm",
                     "0cm",
                     ToCentimeters(textboxWidth),
-                    "0.6cm",
+                    ToCentimeters(textboxHeight),
                     "Left",
-                    model.BaseFontFamily),
+                    model.BaseFontFamily,
+                    fontSize),
                 BuildPositionedTextbox(
                     "sp2rdlHeaderRight",
                     BuildTemplateExpression(rightText, model),
                     ToCentimeters(textboxWidth + gap),
                     "0cm",
                     ToCentimeters(textboxWidth),
-                    "0.6cm",
+                    ToCentimeters(textboxHeight),
                     "Right",
-                    model.BaseFontFamily)),
+                    model.BaseFontFamily,
+                    fontSize)),
             new XElement(Rdl + "Style",
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "None"))));
@@ -1871,6 +2292,11 @@ internal sealed class RdlBuilder
             return new TemplateToken("{" + name + "}", false);
         }
 
+        if (!string.IsNullOrWhiteSpace(variable.StaticValue))
+        {
+            return new TemplateToken(variable.StaticValue!, false);
+        }
+
         if (model.ReportVariables.DynamicSource.Enabled
             && !string.IsNullOrWhiteSpace(model.ReportVariables.DynamicSource.SqlExpression)
             && !string.IsNullOrWhiteSpace(variable.SourceColumnName))
@@ -1878,10 +2304,14 @@ internal sealed class RdlBuilder
             var datasetName = string.IsNullOrWhiteSpace(model.ReportVariables.DynamicSource.DatasetName)
                 ? "dsReportVariables"
                 : model.ReportVariables.DynamicSource.DatasetName;
-            return new TemplateToken($"CStr(First(Fields!{variable.SourceColumnName.Trim()}.Value, {QuoteExpressionText(datasetName)}))", true);
+            var firstExpr = $"First(Fields!{variable.SourceColumnName.Trim()}.Value, {QuoteExpressionText(datasetName)})";
+            var fallbackLiteral = QuoteExpressionText(variable.FallbackValue ?? string.Empty);
+            return new TemplateToken(
+                $"IIf(IsNothing({firstExpr}) OrElse Trim(CStr({firstExpr})) = \"\", {fallbackLiteral}, CStr({firstExpr}))",
+                true);
         }
 
-        return new TemplateToken(variable.StaticValue ?? variable.FallbackValue ?? string.Empty, false);
+        return new TemplateToken(variable.FallbackValue ?? string.Empty, false);
     }
 
     private sealed record TemplateToken(string Value, bool IsExpression);
@@ -2008,7 +2438,9 @@ internal sealed class RdlBuilder
         string width,
         string height,
         string fontFamily,
-        string textAlign = "Left")
+        string textAlign = "Left",
+        string verticalAlign = "Top",
+        double paddingInPoints = 3.0d)
         => new(Rdl + "Textbox",
             new XAttribute("Name", name),
             new XElement(Rdl + "CanGrow", "true"),
@@ -2031,10 +2463,11 @@ internal sealed class RdlBuilder
             new XElement(Rdl + "Style",
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "None")),
-                new XElement(Rdl + "PaddingLeft", "3pt"),
-                new XElement(Rdl + "PaddingRight", "3pt"),
-                new XElement(Rdl + "PaddingTop", "3pt"),
-                new XElement(Rdl + "PaddingBottom", "3pt")));
+                new XElement(Rdl + "VerticalAlign", NormalizeVerticalAlign(verticalAlign)),
+                new XElement(Rdl + "PaddingLeft", ToPoints(paddingInPoints)),
+                new XElement(Rdl + "PaddingRight", ToPoints(paddingInPoints)),
+                new XElement(Rdl + "PaddingTop", ToPoints(paddingInPoints)),
+                new XElement(Rdl + "PaddingBottom", ToPoints(paddingInPoints))));
 
     private static XElement BuildImage(
         string name,
@@ -2168,6 +2601,46 @@ internal sealed class RdlBuilder
 
     private static string ToCentimeters(double value)
         => $"{value.ToString("0.###", CultureInfo.InvariantCulture)}cm";
+
+    private static string ToPoints(double value)
+        => $"{Math.Max(0.0d, value).ToString("0.###", CultureInfo.InvariantCulture)}pt";
+
+    private static string NormalizeHexColor(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        var trimmed = value.Trim();
+        if (!trimmed.StartsWith("#", StringComparison.Ordinal))
+        {
+            trimmed = "#" + trimmed;
+        }
+
+        return Regex.IsMatch(trimmed, "^#[0-9A-Fa-f]{6}$") ? trimmed.ToUpperInvariant() : fallback;
+    }
+
+    private static string ShiftColor(string? baseColor, double amount, string fallback)
+    {
+        var normalized = NormalizeHexColor(baseColor, fallback);
+        try
+        {
+            var red = Convert.ToInt32(normalized.Substring(1, 2), 16);
+            var green = Convert.ToInt32(normalized.Substring(3, 2), 16);
+            var blue = Convert.ToInt32(normalized.Substring(5, 2), 16);
+            return $"#{ShiftChannel(red, amount):X2}{ShiftChannel(green, amount):X2}{ShiftChannel(blue, amount):X2}";
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    private static int ShiftChannel(int value, double amount)
+        => amount >= 0
+            ? Math.Clamp((int)Math.Round(value + (255 - value) * amount), 0, 255)
+            : Math.Clamp((int)Math.Round(value * (1 + amount)), 0, 255);
 
     private static double GetUsablePageWidth(PageSetupConfig pageSetup)
         => Math.Max(1.0d, pageSetup.WidthInCentimeters - pageSetup.LeftMarginInCentimeters - pageSetup.RightMarginInCentimeters);

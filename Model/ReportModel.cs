@@ -40,6 +40,8 @@ internal sealed class ReportModel
 
     public ReportSummaryConfig ReportSummary { get; set; } = new();
 
+    public TablixStyleConfig TablixStyle { get; set; } = new();
+
     public PageSetupConfig PageSetup { get; set; } = new();
 
     public PageHeaderConfig PageHeader { get; set; } = new();

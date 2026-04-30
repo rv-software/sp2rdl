@@ -3,8 +3,6 @@ using Microsoft.VisualStudio.Extensibility;
 using Microsoft.VisualStudio.Extensibility.Commands;
 using Microsoft.VisualStudio.Extensibility.Shell;
 using Microsoft.VisualStudio.ProjectSystem.Query;
-using sp2rdlGenExtension.Generation;
-using sp2rdlGenExtension.Model;
 using sp2rdlGenExtension.Services;
 using System.Diagnostics;
 using System.IO;
@@ -13,33 +11,22 @@ using System.Runtime.InteropServices;
 namespace sp2rdlGenExtension
 {
     /// <summary>
-    /// Command1 handler.
+    /// Visual Studio command that opens the report generator setup dialog.
     /// </summary>
     [VisualStudioContribution]
     internal class Command1 : Command
     {
         private readonly TraceSource logger;
-        private readonly SqlIntrospector sqlIntrospector;
-        private readonly ReportOutputWriter outputWriter;
         private readonly ReportDialogService reportDialogService;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Command1"/> class.
         /// </summary>
         /// <param name="traceSource">Trace source instance to utilize.</param>
-        /// <param name="sqlIntrospector">Stored procedure metadata reader.</param>
-        /// <param name="outputWriter">Report output writer.</param>
-        public Command1(
-            TraceSource traceSource,
-            SqlIntrospector sqlIntrospector,
-            ReportOutputWriter outputWriter,
-            ReportDialogService reportDialogService)
+        /// <param name="reportDialogService">Service that owns WPF dialog creation.</param>
+        public Command1(TraceSource traceSource, ReportDialogService reportDialogService)
         {
-            // This optional TraceSource can be used for logging in the command. You can use dependency injection to access
-            // other services here as well.
             this.logger = Requires.NotNull(traceSource, nameof(traceSource));
-            this.sqlIntrospector = Requires.NotNull(sqlIntrospector, nameof(sqlIntrospector));
-            this.outputWriter = Requires.NotNull(outputWriter, nameof(outputWriter));
             this.reportDialogService = Requires.NotNull(reportDialogService, nameof(reportDialogService));
         }
 
@@ -54,19 +41,13 @@ namespace sp2rdlGenExtension
 
         /// <inheritdoc />
         public override Task InitializeAsync(CancellationToken cancellationToken)
-        {
-            // Use InitializeAsync for any one-time setup or initialization.
-            return base.InitializeAsync(cancellationToken);
-        }
+            => base.InitializeAsync(cancellationToken);
 
         /// <inheritdoc />
         public override async Task ExecuteCommandAsync(IClientContext context, CancellationToken cancellationToken)
         {
             try
             {
-                _ = this.sqlIntrospector;
-                _ = this.outputWriter;
-
                 var solutionDirectory = await ResolveSolutionDirectoryAsync(cancellationToken);
                 if (string.IsNullOrWhiteSpace(solutionDirectory))
                 {
@@ -78,20 +59,9 @@ namespace sp2rdlGenExtension
                 }
 
                 var ownerHwnd = GetForegroundWindow();
-                var request = this.reportDialogService.ShowSetupDialog(solutionDirectory, ownerHwnd);
-                if (request is null)
-                {
-                    return;
-                }
-
-                var outputPath = ResolveOutputPath(request, solutionDirectory);
-                request.ReportModel.OutputPath = outputPath;
-                this.outputWriter.Write(outputPath, request.ReportModel);
-
-                await this.Extensibility.Shell().ShowPromptAsync(
-                    $"Report generated:{Environment.NewLine}{outputPath}",
-                    PromptOptions.OK,
-                    cancellationToken);
+                // Setup dialog drives generation in-place; it stays open across multiple
+                // Generate clicks and writes the output itself, so nothing to do here on close.
+                _ = this.reportDialogService.ShowSetupDialog(solutionDirectory, ownerHwnd);
             }
             catch (Exception ex)
             {
@@ -164,26 +134,6 @@ namespace sp2rdlGenExtension
             }
 
             return Directory.GetCurrentDirectory();
-        }
-
-        private static string ResolveOutputPath(ReportGenerationRequest request, string solutionDirectory)
-        {
-            if (!string.IsNullOrWhiteSpace(request.OutputPath))
-            {
-                return request.OutputPath;
-            }
-
-            var reportName = string.IsNullOrWhiteSpace(request.ReportModel.Name)
-                ? "Report"
-                : request.ReportModel.Name.Trim();
-
-            foreach (var invalid in Path.GetInvalidFileNameChars())
-            {
-                reportName = reportName.Replace(invalid, '_');
-            }
-
-            var extension = request.ReportModel.OutputMode == Model.OutputMode.Rdlc ? ".rdlc" : ".rdl";
-            return Path.Combine(solutionDirectory, reportName + extension);
         }
 
         [DllImport("user32.dll")]

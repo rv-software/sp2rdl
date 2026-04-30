@@ -1,5 +1,6 @@
 using System.Windows.Interop;
 using sp2rdlGenExtension.Dialogs;
+using sp2rdlGenExtension.Generation;
 using sp2rdlGenExtension.Model;
 
 namespace sp2rdlGenExtension.Services;
@@ -7,10 +8,12 @@ namespace sp2rdlGenExtension.Services;
 internal sealed class ReportDialogService
 {
     private readonly SqlIntrospector sqlIntrospector;
+    private readonly ReportOutputWriter outputWriter;
 
-    public ReportDialogService(SqlIntrospector sqlIntrospector)
+    public ReportDialogService(SqlIntrospector sqlIntrospector, ReportOutputWriter outputWriter)
     {
         this.sqlIntrospector = sqlIntrospector;
+        this.outputWriter = outputWriter;
     }
 
     public ReportGenerationRequest? ShowSetupDialog(string solutionDirectory, IntPtr ownerHwnd)
@@ -23,7 +26,7 @@ internal sealed class ReportDialogService
         {
             try
             {
-                var dialog = new ReportSetupDialog(solutionDirectory, this.sqlIntrospector);
+                var dialog = new ReportSetupDialog(solutionDirectory, this.sqlIntrospector, this.outputWriter);
                 DialogThemeService.Apply(dialog, ownerHwnd);
                 if (ownerHwnd != IntPtr.Zero)
                 {

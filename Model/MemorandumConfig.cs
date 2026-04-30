@@ -26,9 +26,15 @@ internal sealed class MemorandumConfig
 
     public bool ShowVerticalSeparator { get; set; } = true;
 
+    public bool ShowLogoBottomLine { get; set; }
+
     public bool ShowBottomLine { get; set; } = true;
 
     public double HeightInCentimeters { get; set; } = 2.5d;
 
     public string LayoutPreset { get; set; } = "LogoLeftTextRight";
+
+    public MemorandumLogoAlignment LogoAlignment { get; set; } = MemorandumLogoAlignment.Left;
+
+    public MemorandumTextPlacement TextPlacement { get; set; } = MemorandumTextPlacement.BesideLogo;
 }
