@@ -183,10 +183,14 @@
                             <ComboBoxItem Content="Landscape" Tag="Landscape"/>
                         </ComboBox>
                         <TextBlock Text="Margins cm:" Style="{StaticResource LabelText}" Margin="0,0,8,0"/>
-                        <TextBox x:Name="TxtMarginLeft" Style="{StaticResource FieldBox}" Width="52" Text="1" Margin="0,0,4,0"/>
-                        <TextBox x:Name="TxtMarginRight" Style="{StaticResource FieldBox}" Width="52" Text="1" Margin="0,0,4,0"/>
-                        <TextBox x:Name="TxtMarginTop" Style="{StaticResource FieldBox}" Width="52" Text="1" Margin="0,0,4,0"/>
-                        <TextBox x:Name="TxtMarginBottom" Style="{StaticResource FieldBox}" Width="52" Text="1"/>
+                        <TextBlock Text="T" Style="{StaticResource LabelText}" Margin="0,0,3,0" ToolTip="Top margin"/>
+                        <TextBox x:Name="TxtMarginTop" Style="{StaticResource FieldBox}" Width="52" Text="1" Margin="0,0,8,0" ToolTip="Top margin"/>
+                        <TextBlock Text="L" Style="{StaticResource LabelText}" Margin="0,0,3,0" ToolTip="Left margin"/>
+                        <TextBox x:Name="TxtMarginLeft" Style="{StaticResource FieldBox}" Width="52" Text="1" Margin="0,0,8,0" ToolTip="Left margin"/>
+                        <TextBlock Text="B" Style="{StaticResource LabelText}" Margin="0,0,3,0" ToolTip="Bottom margin"/>
+                        <TextBox x:Name="TxtMarginBottom" Style="{StaticResource FieldBox}" Width="52" Text="1" Margin="0,0,8,0" ToolTip="Bottom margin"/>
+                        <TextBlock Text="R" Style="{StaticResource LabelText}" Margin="0,0,3,0" ToolTip="Right margin"/>
+                        <TextBox x:Name="TxtMarginRight" Style="{StaticResource FieldBox}" Width="52" Text="1" ToolTip="Right margin"/>
                     </WrapPanel>
 
                     <TextBlock Grid.Row="16" Grid.Column="0" Text="Base font:" Style="{StaticResource LabelText}"/>

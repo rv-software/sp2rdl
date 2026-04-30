@@ -136,15 +136,19 @@ Za multiselect parametar koji se koristi u SQL-u najcesce se mora koristiti `IN`
 
 ## Static vrijednosti
 
-Ako parametar ima mali fiksni izbor, ne mora se praviti tabela. Koristi static values.
+Ako parametar ima mali fiksni izbor, ne mora se praviti tabela niti SQL lookup. Koristi `Static` kolonu na tabu `Report params`.
+
+Static editor ne ocekuje SQL. Unosi se jedan par po redu, a `Value` i `Label` se razdvajaju pipe znakom `|`.
 
 Primjer:
 
-```sql
-SELECT 1 AS Value, 'OS' AS Label
-UNION ALL
-SELECT 2, 'SS'
+```text
+1 | OS
+2 | SS
+3 | Fakultet
 ```
+
+Lijeva strana je vrijednost koja se prosljedjuje reportu/SP-u. Desna strana je tekst koji korisnik vidi u parameter panelu. Ako ne upises label, koristi se ista vrijednost kao label.
 
 Static values su korisne za status, tip, nivo, pol i slicne male liste.
 
@@ -341,4 +345,3 @@ Prvo probaj generisati minimalan report, pa postepeno vracaj kompleksne opcije.
 - `{Line}` za potpis.
 
 Nakon ovih pet vjezbi developer moze samostalno napraviti vecinu standardnih RDL reporta i znace kada treba preci na subreport ili rucnu doradu u Report Builderu.
-

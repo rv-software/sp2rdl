@@ -65,6 +65,15 @@ Lookup moze biti:
 - staticka lista vrijednosti,
 - rucno unesen SQL.
 
+Staticka lista se unosi kroz `Static` dugme na tabu `Report params`, jedan par po redu:
+
+```text
+1 | OS
+2 | SS
+```
+
+Lijevo od `|` je vrijednost, desno je label koji korisnik vidi.
+
 `Suggest SQL` za lookup pokusava pronaci tabelu ciji primary key ima isti naziv kao parametar i zatim kao label kolone predlaze kolone koje u nazivu imaju `Name`, npr. `Name`, `SchoolName`, `OrganisationName`.
 
 `Depends on` sluzi za cascading parametre. U padajucem izboru se nude samo parametri sa manjim ordinalom da se izbjegnu forward dependency problemi.
