@@ -8,11 +8,22 @@
         MinHeight="560"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
-        Background="#1E1E1E">
+        Background="{DynamicResource DialogBackgroundBrush}">
 
     <Window.Resources>
+        <SolidColorBrush x:Key="DialogBackgroundBrush" Color="#1E1E1E"/>
+        <SolidColorBrush x:Key="DialogPanelBrush" Color="#252526"/>
+        <SolidColorBrush x:Key="DialogPrimaryTextBrush" Color="#D4D4D4"/>
+        <SolidColorBrush x:Key="DialogSecondaryTextBrush" Color="#9AA0A6"/>
+        <SolidColorBrush x:Key="DialogFieldBackgroundBrush" Color="#3C3C3C"/>
+        <SolidColorBrush x:Key="DialogFieldTextBrush" Color="#F2F2F2"/>
+        <SolidColorBrush x:Key="DialogBorderBrush" Color="#3F3F46"/>
+        <SolidColorBrush x:Key="DialogButtonBackgroundBrush" Color="#3E3E42"/>
+        <SolidColorBrush x:Key="DialogButtonTextBrush" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="DialogCancelButtonBackgroundBrush" Color="#4A4A4F"/>
+
         <Style x:Key="ActionBtn" TargetType="Button">
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Foreground" Value="{DynamicResource DialogButtonTextBrush}"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Padding" Value="14,8"/>
@@ -21,16 +32,16 @@
         </Style>
 
         <Style x:Key="InfoLabel" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#888888"/>
+            <Setter Property="Foreground" Value="{DynamicResource DialogSecondaryTextBrush}"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
 
         <Style x:Key="FieldBox" TargetType="TextBox">
-            <Setter Property="Background" Value="#3C3C3C"/>
-            <Setter Property="Foreground" Value="#D4D4D4"/>
-            <Setter Property="CaretBrush" Value="White"/>
-            <Setter Property="BorderBrush" Value="#555555"/>
+            <Setter Property="Background" Value="{DynamicResource DialogFieldBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource DialogFieldTextBrush}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource DialogFieldTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource DialogBorderBrush}"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="10,8"/>
             <Setter Property="FontSize" Value="12"/>
@@ -38,9 +49,9 @@
         </Style>
 
         <Style x:Key="FieldCombo" TargetType="ComboBox">
-            <Setter Property="Background" Value="#3C3C3C"/>
-            <Setter Property="Foreground" Value="#000000"/>
-            <Setter Property="BorderBrush" Value="#555555"/>
+            <Setter Property="Background" Value="{DynamicResource DialogFieldBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource DialogFieldTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource DialogBorderBrush}"/>
             <Setter Property="Padding" Value="8,6"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Height" Value="34"/>
@@ -58,14 +69,14 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0">
-            <TextBlock Text="Database connection" Foreground="#D4D4D4" FontSize="20" FontWeight="Bold"/>
+            <TextBlock Text="Database connection" Foreground="{DynamicResource DialogPrimaryTextBrush}" FontSize="20" FontWeight="Bold"/>
             <TextBlock Text="Choose a connection found in the solution or enter SQL Server connection details."
                        Margin="0,6,0,0"
-                       Foreground="#9AA0A6"
+                       Foreground="{DynamicResource DialogSecondaryTextBrush}"
                        FontSize="12"/>
         </StackPanel>
 
-        <Border Grid.Row="2" Background="#252526" BorderBrush="#3F3F46" BorderThickness="1" Padding="14">
+        <Border Grid.Row="2" Background="{DynamicResource DialogPanelBrush}" BorderBrush="{DynamicResource DialogBorderBrush}" BorderThickness="1" Padding="14">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="140"/>
@@ -81,11 +92,11 @@
                 <ComboBox Grid.Row="0" Grid.Column="1" x:Name="CmbDiscoveredConnections" DisplayMemberPath="DisplayName" Style="{StaticResource FieldCombo}" SelectionChanged="CmbDiscoveredConnections_SelectionChanged"/>
 
                 <TextBlock Grid.Row="2" Grid.Column="0" Text="Source file:" Style="{StaticResource InfoLabel}"/>
-                <TextBlock Grid.Row="2" Grid.Column="1" x:Name="LblConnectionSource" Text="-" Foreground="#D4D4D4" FontSize="11" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                <TextBlock Grid.Row="2" Grid.Column="1" x:Name="LblConnectionSource" Text="-" Foreground="{DynamicResource DialogPrimaryTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
             </Grid>
         </Border>
 
-        <Border Grid.Row="4" Background="#252526" BorderBrush="#3F3F46" BorderThickness="1" Padding="14">
+        <Border Grid.Row="4" Background="{DynamicResource DialogPanelBrush}" BorderBrush="{DynamicResource DialogBorderBrush}" BorderThickness="1" Padding="14">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="140"/>
@@ -117,13 +128,13 @@
                     <ComboBoxItem Content="SQL Server Authentication" Tag="sql"/>
                 </ComboBox>
 
-                <CheckBox Grid.Row="2" Grid.Column="3" Grid.ColumnSpan="2" x:Name="ChkTrustServerCertificate" Content="Trust server certificate" Foreground="#D4D4D4" VerticalAlignment="Center" Checked="ConnectionField_Changed" Unchecked="ConnectionField_Changed"/>
+                <CheckBox Grid.Row="2" Grid.Column="3" Grid.ColumnSpan="2" x:Name="ChkTrustServerCertificate" Content="Trust server certificate" Foreground="{DynamicResource DialogPrimaryTextBrush}" VerticalAlignment="Center" Checked="ConnectionField_Changed" Unchecked="ConnectionField_Changed"/>
 
                 <TextBlock Grid.Row="4" Grid.Column="0" Text="User name:" Style="{StaticResource InfoLabel}"/>
                 <TextBox Grid.Row="4" Grid.Column="1" x:Name="TxtUser" Style="{StaticResource FieldBox}" Height="34" TextChanged="ConnectionField_Changed"/>
 
                 <TextBlock Grid.Row="4" Grid.Column="3" Text="Password:" Style="{StaticResource InfoLabel}"/>
-                <PasswordBox Grid.Row="4" Grid.Column="4" x:Name="TxtPassword" Background="#3C3C3C" Foreground="#D4D4D4" BorderBrush="#555555" BorderThickness="1" Padding="10,8" Height="34" PasswordChanged="TxtPassword_PasswordChanged"/>
+                <PasswordBox Grid.Row="4" Grid.Column="4" x:Name="TxtPassword" Background="{DynamicResource DialogFieldBackgroundBrush}" Foreground="{DynamicResource DialogFieldTextBrush}" BorderBrush="{DynamicResource DialogBorderBrush}" BorderThickness="1" Padding="10,8" Height="34" PasswordChanged="TxtPassword_PasswordChanged"/>
 
                 <TextBlock Grid.Row="6" Grid.Column="0" Text="Database:" Style="{StaticResource InfoLabel}"/>
                 <ComboBox Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="4" x:Name="CmbDatabase" IsEditable="True" IsTextSearchEnabled="False" Style="{StaticResource FieldCombo}" SelectionChanged="CmbDatabase_SelectionChanged" DropDownOpened="CmbDatabase_DropDownOpened"/>
@@ -136,9 +147,9 @@
         </Border>
 
         <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
-            <Button x:Name="TestButton" Content="Test" Background="#3E3E42" Style="{StaticResource ActionBtn}" Width="90" Height="34" Margin="0,0,8,0" Click="TestButton_Click"/>
-            <Button x:Name="OkButton" Content="Connect" Background="#27AE60" Style="{StaticResource ActionBtn}" Width="90" Height="34" Margin="0,0,8,0" Click="OkButton_Click"/>
-            <Button Content="Cancel" Background="#4A4A4F" Style="{StaticResource ActionBtn}" Width="90" Height="34" Click="CancelButton_Click"/>
+            <Button x:Name="TestButton" Content="Test" Background="{DynamicResource DialogButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Width="90" Height="34" Margin="0,0,8,0" Click="TestButton_Click"/>
+            <Button x:Name="OkButton" Content="Connect" Background="#27AE60" Foreground="White" Style="{StaticResource ActionBtn}" Width="90" Height="34" Margin="0,0,8,0" Click="OkButton_Click"/>
+            <Button Content="Cancel" Background="{DynamicResource DialogCancelButtonBackgroundBrush}" Style="{StaticResource ActionBtn}" Width="90" Height="34" Click="CancelButton_Click"/>
         </StackPanel>
     </Grid>
 </Window>

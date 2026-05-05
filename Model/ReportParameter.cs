@@ -20,11 +20,31 @@ internal sealed class ReportParameter
 
     public string? DefaultValueExpression { get; set; }
 
+    public string? DefaultValueSql { get; set; }
+
+    public string? DefaultValueDatasetName { get; set; }
+
+    public string? DefaultValueField { get; set; }
+
+    public string? DisplayFormat { get; set; }
+
+    public string? LookupSql { get; set; }
+
+    public string? DependsOnParameterName { get; set; }
+
+    public string? BindToDatasetParameterName { get; set; }
+
+    public string? CompareToParameterName { get; set; }
+
+    public string? CompareOperator { get; set; }
+
     public LookupConfig? Lookup { get; set; }
 
-    public List<string> StaticValidValues { get; set; } = new();
+    public List<StaticValidValue> StaticValidValues { get; set; } = new();
 
     public List<ParameterDependency> Dependencies { get; set; } = new();
+
+    public int OrdinalNumber { get; set; }
 
     public int LayoutRow { get; set; }
 

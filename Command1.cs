@@ -3,7 +3,6 @@ using Microsoft.VisualStudio.Extensibility;
 using Microsoft.VisualStudio.Extensibility.Commands;
 using Microsoft.VisualStudio.Extensibility.Shell;
 using Microsoft.VisualStudio.ProjectSystem.Query;
-using sp2rdlGenExtension.Generation;
 using sp2rdlGenExtension.Services;
 using System.Diagnostics;
 using System.IO;
@@ -12,33 +11,22 @@ using System.Runtime.InteropServices;
 namespace sp2rdlGenExtension
 {
     /// <summary>
-    /// Command1 handler.
+    /// Visual Studio command that opens the report generator setup dialog.
     /// </summary>
     [VisualStudioContribution]
     internal class Command1 : Command
     {
         private readonly TraceSource logger;
-        private readonly SqlIntrospector sqlIntrospector;
-        private readonly ReportOutputWriter outputWriter;
         private readonly ReportDialogService reportDialogService;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Command1"/> class.
         /// </summary>
         /// <param name="traceSource">Trace source instance to utilize.</param>
-        /// <param name="sqlIntrospector">Stored procedure metadata reader.</param>
-        /// <param name="outputWriter">Report output writer.</param>
-        public Command1(
-            TraceSource traceSource,
-            SqlIntrospector sqlIntrospector,
-            ReportOutputWriter outputWriter,
-            ReportDialogService reportDialogService)
+        /// <param name="reportDialogService">Service that owns WPF dialog creation.</param>
+        public Command1(TraceSource traceSource, ReportDialogService reportDialogService)
         {
-            // This optional TraceSource can be used for logging in the command. You can use dependency injection to access
-            // other services here as well.
             this.logger = Requires.NotNull(traceSource, nameof(traceSource));
-            this.sqlIntrospector = Requires.NotNull(sqlIntrospector, nameof(sqlIntrospector));
-            this.outputWriter = Requires.NotNull(outputWriter, nameof(outputWriter));
             this.reportDialogService = Requires.NotNull(reportDialogService, nameof(reportDialogService));
         }
 
@@ -53,19 +41,13 @@ namespace sp2rdlGenExtension
 
         /// <inheritdoc />
         public override Task InitializeAsync(CancellationToken cancellationToken)
-        {
-            // Use InitializeAsync for any one-time setup or initialization.
-            return base.InitializeAsync(cancellationToken);
-        }
+            => base.InitializeAsync(cancellationToken);
 
         /// <inheritdoc />
         public override async Task ExecuteCommandAsync(IClientContext context, CancellationToken cancellationToken)
         {
             try
             {
-                _ = this.sqlIntrospector;
-                _ = this.outputWriter;
-
                 var solutionDirectory = await ResolveSolutionDirectoryAsync(cancellationToken);
                 if (string.IsNullOrWhiteSpace(solutionDirectory))
                 {
@@ -77,25 +59,35 @@ namespace sp2rdlGenExtension
                 }
 
                 var ownerHwnd = GetForegroundWindow();
-                var request = this.reportDialogService.ShowSetupDialog(solutionDirectory, ownerHwnd);
-                if (request is null)
-                {
-                    return;
-                }
-
-                await this.Extensibility.Shell().ShowPromptAsync(
-                    $"Setup dialog returned request for '{request.ReportModel.Name}'. Generation wiring is next.",
-                    PromptOptions.OK,
-                    cancellationToken);
+                // Setup dialog drives generation in-place; it stays open across multiple
+                // Generate clicks and writes the output itself, so nothing to do here on close.
+                _ = this.reportDialogService.ShowSetupDialog(solutionDirectory, ownerHwnd);
             }
             catch (Exception ex)
             {
-                this.logger.TraceEvent(TraceEventType.Error, 0, ex.ToString());
+                var error = BuildSafeExceptionSummary(ex);
+                this.logger.TraceEvent(TraceEventType.Error, 0, error);
                 await this.Extensibility.Shell().ShowPromptAsync(
-                    $"Generation setup failed:{Environment.NewLine}{ex.Message}",
+                    $"Generation setup failed:{Environment.NewLine}{error}",
                     PromptOptions.OK,
                     cancellationToken);
             }
+        }
+
+        private static string BuildSafeExceptionSummary(Exception ex)
+        {
+            var details = new List<string>
+            {
+                ex.GetType().FullName ?? ex.GetType().Name,
+                $"HResult: 0x{ex.HResult:X8}"
+            };
+
+            if (!string.IsNullOrWhiteSpace(ex.StackTrace))
+            {
+                details.Add(ex.StackTrace);
+            }
+
+            return string.Join(Environment.NewLine, details);
         }
 
         private async Task<string?> ResolveSolutionDirectoryAsync(CancellationToken cancellationToken)

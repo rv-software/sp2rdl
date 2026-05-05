@@ -13,4 +13,6 @@ internal sealed class PageHeaderConfig
     public bool PrintOnFirstPage { get; set; } = true;
 
     public bool PrintOnLastPage { get; set; } = true;
+
+    public double FontSizeInPoints { get; set; } = 9d;
 }

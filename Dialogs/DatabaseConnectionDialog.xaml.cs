@@ -20,16 +20,18 @@ public partial class DatabaseConnectionDialog : Window
 
         CmbDiscoveredConnections.ItemsSource = ConnectionStringDiscoveryService.Discover(solutionDirectory);
         CmbDatabase.AddHandler(TextBox.TextChangedEvent, new TextChangedEventHandler(CmbDatabase_TextChanged));
-        CmbAuthentication.SelectedIndex = 0;
+        SetAuthenticationMode("windows");
         ChkTrustServerCertificate.IsChecked = true;
 
         if (!string.IsNullOrWhiteSpace(currentConnectionString))
         {
             ApplyConnectionString(currentConnectionString);
         }
-
-        RefreshAuthenticationFields();
-        RefreshConnectionStringFromFields();
+        else
+        {
+            RefreshAuthenticationFields();
+            RefreshConnectionStringFromFields();
+        }
     }
 
     private void CmbDiscoveredConnections_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -138,8 +140,8 @@ public partial class DatabaseConnectionDialog : Window
             TxtUser.Text = builder.UserID;
             TxtPassword.Password = builder.Password;
             ChkTrustServerCertificate.IsChecked = builder.TrustServerCertificate;
-            CmbAuthentication.SelectedIndex = builder.IntegratedSecurity ? 0 : 1;
-            TxtConnectionString.Text = builder.ConnectionString;
+            SetAuthenticationMode(UsesWindowsAuthentication(builder) ? "windows" : "sql");
+            TxtConnectionString.Text = NormalizeConnectionString(builder);
             LblStatus.Text = string.Empty;
         }
         catch
@@ -186,6 +188,11 @@ public partial class DatabaseConnectionDialog : Window
             else
             {
                 builder.IntegratedSecurity = true;
+                builder.Remove("User ID");
+                builder.Remove("UID");
+                builder.Remove("Password");
+                builder.Remove("Pwd");
+                builder.Remove("Authentication");
             }
 
             TxtConnectionString.Text = builder.ConnectionString;
@@ -263,6 +270,11 @@ public partial class DatabaseConnectionDialog : Window
         else
         {
             builder.IntegratedSecurity = true;
+            builder.Remove("User ID");
+            builder.Remove("UID");
+            builder.Remove("Password");
+            builder.Remove("Pwd");
+            builder.Remove("Authentication");
         }
 
         return builder;
@@ -270,5 +282,46 @@ public partial class DatabaseConnectionDialog : Window
 
     private string GetAuthenticationMode()
         => (CmbAuthentication.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "windows";
+
+    private void SetAuthenticationMode(string mode)
+    {
+        foreach (var item in CmbAuthentication.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), mode, StringComparison.OrdinalIgnoreCase))
+            {
+                CmbAuthentication.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbAuthentication.SelectedIndex = 0;
+    }
+
+    private static bool UsesWindowsAuthentication(SqlConnectionStringBuilder builder)
+    {
+        if (builder.IntegratedSecurity)
+        {
+            return true;
+        }
+
+        return builder.TryGetValue("Authentication", out var authentication)
+            && authentication is not null
+            && authentication.ToString()?.IndexOf("Integrated", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static string NormalizeConnectionString(SqlConnectionStringBuilder builder)
+    {
+        if (UsesWindowsAuthentication(builder))
+        {
+            builder.IntegratedSecurity = true;
+            builder.Remove("User ID");
+            builder.Remove("UID");
+            builder.Remove("Password");
+            builder.Remove("Pwd");
+            builder.Remove("Authentication");
+        }
+
+        return builder.ConnectionString;
+    }
 }
 #pragma warning restore CS0618

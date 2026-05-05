@@ -1,0 +1,47 @@
+<Window x:Class="sp2rdlGenExtension.Dialogs.ColorPickerDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pick color"
+        Width="360"
+        Height="260"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="10"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="10"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="60"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="52"/>
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" x:Name="PreviewBorder" Height="38" BorderBrush="#808080" BorderThickness="1"/>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Red:" VerticalAlignment="Center"/>
+        <Slider Grid.Row="2" Grid.Column="1" x:Name="SliderRed" Minimum="0" Maximum="255" TickFrequency="1" ValueChanged="Slider_ValueChanged"/>
+        <TextBox Grid.Row="2" Grid.Column="2" x:Name="TxtRed" IsReadOnly="True" Margin="8,0,0,0"/>
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="Green:" VerticalAlignment="Center"/>
+        <Slider Grid.Row="4" Grid.Column="1" x:Name="SliderGreen" Minimum="0" Maximum="255" TickFrequency="1" ValueChanged="Slider_ValueChanged"/>
+        <TextBox Grid.Row="4" Grid.Column="2" x:Name="TxtGreen" IsReadOnly="True" Margin="8,0,0,0"/>
+
+        <TextBlock Grid.Row="6" Grid.Column="0" Text="Blue:" VerticalAlignment="Center"/>
+        <Slider Grid.Row="6" Grid.Column="1" x:Name="SliderBlue" Minimum="0" Maximum="255" TickFrequency="1" ValueChanged="Slider_ValueChanged"/>
+        <TextBox Grid.Row="6" Grid.Column="2" x:Name="TxtBlue" IsReadOnly="True" Margin="8,0,0,0"/>
+
+        <StackPanel Grid.Row="8" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <TextBox x:Name="TxtHex" Width="90" IsReadOnly="True" Margin="0,0,12,0"/>
+            <Button Content="OK" Width="80" Margin="0,0,8,0" IsDefault="True" Click="OkButton_Click"/>
+            <Button Content="Cancel" Width="80" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

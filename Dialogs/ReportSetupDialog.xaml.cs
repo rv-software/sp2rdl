@@ -1,32 +1,149 @@
 using System.Collections.ObjectModel;
+using System.Data;
 using System.Data.SqlClient;
 using System.Globalization;
 using System.IO;
+using System.Net;
+using System.Reflection;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Win32;
+using sp2rdlGenExtension.Generation;
 using sp2rdlGenExtension.Model;
 using sp2rdlGenExtension.Persistence;
 using sp2rdlGenExtension.Services;
 
 namespace sp2rdlGenExtension.Dialogs;
 
+internal sealed record Choice<T>(T Value, string Label);
+
 #pragma warning disable CS0618 // Project decision: use System.Data.SqlClient for VSIX compatibility.
 public partial class ReportSetupDialog : Window
 {
+    private static readonly Regex TemplatePlaceholderRegex = new(@"\{(?<name>[A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
+    private static readonly Regex HtmlParagraphRegex = new(
+        @"<p\b(?<attributes>[^>]*)>(?<content>.*?)</p\s*>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex CssTextAlignRegex = new(
+        @"text-align\s*:\s*(?<align>left|center|right)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly IReadOnlyList<string> SqlTypeNames =
+    [
+        "bit",
+        "tinyint",
+        "smallint",
+        "int",
+        "bigint",
+        "decimal(18,2)",
+        "numeric(18,2)",
+        "money",
+        "float",
+        "real",
+        "date",
+        "datetime",
+        "datetime2",
+        "time",
+        "uniqueidentifier",
+        "char",
+        "varchar",
+        "nvarchar",
+        "text",
+        "binary",
+        "varbinary"
+    ];
+    private static readonly IReadOnlyList<string> CompareOperators = [">=", "<=", ">", "<", "="];
+    private static readonly IReadOnlyList<string> TextAlignOptions = [string.Empty, "Left", "Center", "Right"];
+    private static readonly IReadOnlyList<Choice<int>> GroupLevels =
+    [
+        new(0, string.Empty),
+        new(1, "1"),
+        new(2, "2"),
+        new(3, "3"),
+        new(4, "4")
+    ];
+
     private readonly string solutionDirectory;
     private readonly SqlIntrospector sqlIntrospector;
+    private readonly ReportOutputWriter outputWriter;
     private readonly ObservableCollection<DatasetFieldDraft> fieldDrafts = new();
+    private readonly ObservableCollection<ReportParameter> reportParameters = new();
+    private readonly ObservableCollection<ReportVariableConfig> reportVariables = new();
+    private readonly ObservableCollection<Choice<string>> storedProcedureParameterChoices = new();
+    private readonly Dictionary<string, string?> reportVariablePreviewValues = new(StringComparer.OrdinalIgnoreCase);
+    private readonly CancellationTokenSource cts = new();
     private StoredProcedureMetadata? currentMetadata;
+    private TextBox? activeReportSummaryTemplateBox;
 
     internal ReportGenerationRequest Request { get; private set; } = new();
 
-    internal ReportSetupDialog(string solutionDirectory, SqlIntrospector sqlIntrospector)
+    internal ReportSetupDialog(string solutionDirectory, SqlIntrospector sqlIntrospector, ReportOutputWriter outputWriter)
     {
         this.solutionDirectory = solutionDirectory;
         this.sqlIntrospector = sqlIntrospector;
+        this.outputWriter = outputWriter;
         InitializeComponent();
+        LoadInstalledFonts();
+        ColFieldSqlType.ItemsSource = SqlTypeNames;
+        ColFieldGroupLevel.ItemsSource = GroupLevels;
+        ColFieldTextAlign.ItemsSource = TextAlignOptions;
+        ColParameterSqlType.ItemsSource = SqlTypeNames;
+        ColParameterControlType.ItemsSource = Enum.GetValues(typeof(ControlType));
+        ColParameterCompareOperator.ItemsSource = CompareOperators;
+        ColParameterBindToSpParam.ItemsSource = this.storedProcedureParameterChoices;
         GridFields.ItemsSource = this.fieldDrafts;
+        GridReportParameters.ItemsSource = this.reportParameters;
+        GridReportVariables.ItemsSource = this.reportVariables;
+        TxtMemorandumTemplate.Text = "<b>{CompanyName}</b>";
+        ApplyTablixStyle(new TablixStyleConfig());
+        InitializeTemplateContextMenus();
+        UpdateReportSummaryColumnVisibility();
+        GridReportParameters.RowEditEnding += GridReportParameters_RowEditEnding;
+        GridReportVariables.CurrentCellChanged += GridReportVariables_CurrentCellChanged;
+        this.Closed += OnClosed;
+    }
+
+    private void GridReportParameters_RowEditEnding(object? sender, DataGridRowEditEndingEventArgs e)
+    {
+        SortReportParametersByOrdinal();
+    }
+
+    private void GridReportVariables_CurrentCellChanged(object? sender, EventArgs e)
+    {
+        RefreshVisibleTemplatePreviews();
+    }
+
+    private void LoadInstalledFonts()
+    {
+        var fontFamilies = Fonts.SystemFontFamilies
+            .Select(fontFamily => fontFamily.Source)
+            .Where(fontFamily => !string.IsNullOrWhiteSpace(fontFamily))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .OrderBy(fontFamily => fontFamily, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        CmbBaseFont.ItemsSource = fontFamilies;
+        CmbTablixFontFamily.ItemsSource = fontFamilies;
+        CmbBaseFont.SelectedItem = fontFamilies.FirstOrDefault(fontFamily =>
+            string.Equals(fontFamily, "Arial", StringComparison.OrdinalIgnoreCase));
+        CmbBaseFont.Text = CmbBaseFont.SelectedItem?.ToString() ?? fontFamilies.FirstOrDefault() ?? "Arial";
+        CmbTablixFontFamily.SelectedItem = fontFamilies.FirstOrDefault(fontFamily =>
+            string.Equals(fontFamily, "Arial Narrow", StringComparison.OrdinalIgnoreCase));
+        CmbTablixFontFamily.Text = CmbTablixFontFamily.SelectedItem?.ToString() ?? "Arial Narrow";
+    }
+
+    private void OnClosed(object? sender, EventArgs e)
+    {
+        if (!this.cts.IsCancellationRequested)
+        {
+            this.cts.Cancel();
+        }
+        this.cts.Dispose();
     }
 
     private void ConnectionButton_Click(object sender, RoutedEventArgs e)
@@ -41,6 +158,7 @@ public partial class ReportSetupDialog : Window
                 Owner = this,
                 ShowActivated = true
             };
+            DialogThemeService.ApplyFromOwner(dialog, this);
 
             dialog.SourceInitialized += (_, _) =>
             {
@@ -57,6 +175,7 @@ public partial class ReportSetupDialog : Window
                 GridParameters.ItemsSource = null;
                 this.fieldDrafts.Clear();
                 this.currentMetadata = null;
+                UpdateStoredProcedureParameterChoices([]);
                 LblMetadataStatus.Text = string.Empty;
 
                 await LoadProceduresAsync();
@@ -84,11 +203,12 @@ public partial class ReportSetupDialog : Window
             Cursor = System.Windows.Input.Cursors.Wait;
             LblMetadataStatus.Text = "Loading stored procedures...";
             var connectionString = TxtConnectionString.Text.Trim();
-            CmbStoredProcedure.ItemsSource = await Task.Run(() =>
-                this.sqlIntrospector.ListStoredProceduresAsync(connectionString, CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult());
+            CmbStoredProcedure.ItemsSource = await this.sqlIntrospector
+                .ListStoredProceduresAsync(connectionString, this.cts.Token);
             LblMetadataStatus.Text = "Stored procedures loaded.";
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
@@ -134,6 +254,79 @@ public partial class ReportSetupDialog : Window
     }
 
     private void LoadStateButton_Click(object sender, RoutedEventArgs e)
+        => _ = LoadStateAsync();
+
+    private void ReadmeButton_Click(object sender, RoutedEventArgs e)
+        => ShowHelpDocument("README.md", "SP to RDL Generator README");
+
+    private void QuickGuideButton_Click(object sender, RoutedEventArgs e)
+        => ShowHelpDocument(Path.Combine("docs", "REPORT_DEVELOPER_QUICK_GUIDE.md"), "SP to RDL Generator Quick Guide");
+
+    private void ShowHelpDocument(string relativePath, string title)
+    {
+        try
+        {
+            var dialog = new ReadmeDialog(title, LoadHelpDocumentText(relativePath))
+            {
+                Owner = this
+            };
+            DialogThemeService.ApplyFromOwner(dialog, this);
+            dialog.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not open help document:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private static string LoadHelpDocumentText(string relativePath)
+    {
+        foreach (var path in GetHelpDocumentCandidatePaths(relativePath))
+        {
+            if (File.Exists(path))
+            {
+                return File.ReadAllText(path);
+            }
+        }
+
+        return LoadEmbeddedHelpDocumentText(relativePath)
+            ?? $"{relativePath} was not found next to the extension binaries or embedded resources.";
+    }
+
+    private static IEnumerable<string> GetHelpDocumentCandidatePaths(string relativePath)
+    {
+        yield return Path.Combine(AppContext.BaseDirectory, relativePath);
+
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            yield return Path.Combine(directory.FullName, relativePath);
+            directory = directory.Parent;
+        }
+    }
+
+    private static string? LoadEmbeddedHelpDocumentText(string relativePath)
+    {
+        var resourceName = relativePath.Replace('\\', '.').Replace('/', '.');
+        var assembly = Assembly.GetExecutingAssembly();
+        var fullResourceName = assembly.GetManifestResourceNames()
+            .FirstOrDefault(name => name.EndsWith(".Help." + resourceName, StringComparison.OrdinalIgnoreCase));
+        if (fullResourceName is null)
+        {
+            return null;
+        }
+
+        using var stream = assembly.GetManifestResourceStream(fullResourceName);
+        if (stream is null)
+        {
+            return null;
+        }
+
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return reader.ReadToEnd();
+    }
+
+    private async Task LoadStateAsync()
     {
         try
         {
@@ -150,12 +343,868 @@ public partial class ReportSetupDialog : Window
             }
 
             ApplyReportModel(SpRdlJsonStore.Load(dialog.FileName));
+            await RefreshReportVariablePreviewAsync(force: true);
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, $"Could not load state:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    private void BrowseOutputButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var outputMode = ReadOutputMode();
+            var extension = outputMode == OutputMode.Rdlc ? ".rdlc" : ".rdl";
+            var filter = outputMode == OutputMode.Rdlc
+                ? "RDLC report (*.rdlc)|*.rdlc|All files (*.*)|*.*"
+                : "RDL report (*.rdl)|*.rdl|All files (*.*)|*.*";
+
+            var dialog = new SaveFileDialog
+            {
+                Title = "Save generated report",
+                Filter = filter,
+                DefaultExt = extension,
+                AddExtension = true,
+                InitialDirectory = Directory.Exists(this.solutionDirectory) ? this.solutionDirectory : null,
+                FileName = BuildDefaultReportFileName(extension)
+            };
+
+            if (!string.IsNullOrWhiteSpace(TxtOutputPath.Text))
+            {
+                dialog.FileName = TxtOutputPath.Text.Trim();
+            }
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                TxtOutputPath.Text = dialog.FileName;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not choose output path:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void BrowseFooterLogoButton_Click(object sender, RoutedEventArgs e)
+        => BrowseImagePath(TxtFooterLogo, "Select footer logo", "Could not choose footer logo");
+
+    private void BrowseMemorandumLogoButton_Click(object sender, RoutedEventArgs e)
+        => BrowseImagePath(TxtMemorandumLogo, "Select memorandum logo", "Could not choose memorandum logo");
+
+    private void BrowseMemorandumSubreportButton_Click(object sender, RoutedEventArgs e)
+        => BrowseReportDefinitionPath(
+            TxtMemorandumSubreport,
+            TxtMemorandumSubreportServerPath,
+            "Select memorandum subreport",
+            "Could not choose memorandum subreport");
+
+    private void BrowseReportSummarySubreportButton_Click(object sender, RoutedEventArgs e)
+        => BrowseReportDefinitionPath(
+            TxtReportSummarySubreport,
+            TxtReportSummarySubreportServerPath,
+            "Select report summary subreport",
+            "Could not choose report summary subreport");
+
+    private void PickTablixShadeBaseColorButton_Click(object sender, RoutedEventArgs e)
+        => PickColorInto(TxtTablixShadeBaseColor);
+
+    private void PickTablixBorderColorButton_Click(object sender, RoutedEventArgs e)
+        => PickColorInto(TxtTablixBorderColor);
+
+    private void PickTablixFontColorButton_Click(object sender, RoutedEventArgs e)
+        => PickColorInto(TxtTablixFontColor);
+
+    private void PickColorInto(TextBox target)
+    {
+        var dialog = new ColorPickerDialog(NormalizeHexColor(target.Text, "#000000"))
+        {
+            Owner = this
+        };
+        DialogThemeService.ApplyFromOwner(dialog, this);
+        if (dialog.ShowDialog() == true)
+        {
+            target.Text = dialog.SelectedHexColor;
+        }
+    }
+
+    private void BrowseImagePath(TextBox targetTextBox, string title, string errorMessage)
+    {
+        try
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = title,
+                Filter = "Image files (*.png;*.jpg;*.jpeg;*.bmp;*.gif)|*.png;*.jpg;*.jpeg;*.bmp;*.gif|All files (*.*)|*.*",
+                CheckFileExists = true
+            };
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                targetTextBox.Text = dialog.FileName;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"{errorMessage}:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void BrowseReportDefinitionPath(TextBox targetTextBox, TextBox? serverPathTextBox, string title, string errorMessage)
+    {
+        try
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = title,
+                Filter = "Report definition (*.rdl;*.rdlc)|*.rdl;*.rdlc|All files (*.*)|*.*",
+                CheckFileExists = true
+            };
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                targetTextBox.Text = dialog.FileName;
+                if (serverPathTextBox is not null && string.IsNullOrWhiteSpace(serverPathTextBox.Text))
+                {
+                    serverPathTextBox.Text = BuildSubreportName(dialog.FileName) ?? string.Empty;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"{errorMessage}:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void EditDefaultSqlButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if ((sender as FrameworkElement)?.DataContext is not ReportParameter parameter)
+        {
+            return;
+        }
+
+        var dialog = new SqlEditorDialog(
+            $"Default SQL - {parameter.Name}",
+            parameter.DefaultValueSql,
+            "SQL treba vratiti jednu vrijednost. Za konstantu mozes koristiti npr. SELECT 1 ili SELECT GETDATE().",
+            previewSqlAsync: sql => PreviewSqlAsync(sql))
+        {
+            Owner = this
+        };
+        DialogThemeService.ApplyFromOwner(dialog, this);
+
+        if (dialog.ShowDialog() == true)
+        {
+            parameter.DefaultValueSql = NormalizeOptional(dialog.SqlText);
+        }
+    }
+
+    private void EditLookupSqlButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if ((sender as FrameworkElement)?.DataContext is not ReportParameter parameter)
+        {
+            return;
+        }
+
+        var dialog = new SqlEditorDialog(
+            $"Lookup SQL - {parameter.Name}",
+            parameter.LookupSql,
+            "SQL treba vratiti value/label kolone za valid values. Primjer: SELECT Id AS Value, Name AS Label FROM dbo.Table ORDER BY Name.",
+            suggestSqlAsync: () => SuggestLookupSqlForParameterAsync(parameter),
+            previewSqlAsync: sql => PreviewSqlAsync(sql))
+        {
+            Owner = this
+        };
+        DialogThemeService.ApplyFromOwner(dialog, this);
+
+        if (dialog.ShowDialog() == true)
+        {
+            parameter.LookupSql = NormalizeOptional(dialog.SqlText);
+            if (!string.IsNullOrWhiteSpace(parameter.LookupSql))
+            {
+                parameter.Lookup ??= new LookupConfig
+                {
+                    DatasetName = BuildLookupDatasetName(parameter.Name)
+                };
+                parameter.Lookup.ValueField = "Value";
+                parameter.Lookup.LabelField = "Label";
+            }
+        }
+    }
+
+    private void EditStaticValuesButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if ((sender as FrameworkElement)?.DataContext is not ReportParameter parameter)
+        {
+            return;
+        }
+
+        var dialog = new SqlEditorDialog(
+            $"Static values - {parameter.Name}",
+            FormatStaticValidValues(parameter.StaticValidValues),
+            "Unesi jedan par po redu. Format: Value | Label. Primjer: 1 | OŠ",
+            previewSqlAsync: null)
+        {
+            Owner = this
+        };
+        DialogThemeService.ApplyFromOwner(dialog, this);
+
+        if (dialog.ShowDialog() == true)
+        {
+            parameter.StaticValidValues = ParseStaticValidValues(dialog.SqlText);
+            if (parameter.StaticValidValues.Count > 0)
+            {
+                parameter.Lookup = null;
+                parameter.LookupSql = null;
+            }
+        }
+    }
+
+    private void EditReportVariablesSqlButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        var dialog = new SqlEditorDialog(
+            "Report variables SQL",
+            TxtReportVariablesSql.Text,
+            "SQL treba vratiti jednu vrstu. Kolone iz prve vrste mogu se koristiti kao placeholderi, npr. {CompanyName}.",
+            previewSqlAsync: sql => PreviewSqlAsync(sql))
+        {
+            Owner = this
+        };
+        DialogThemeService.ApplyFromOwner(dialog, this);
+
+        if (dialog.ShowDialog() == true)
+        {
+            TxtReportVariablesSql.Text = dialog.SqlText.Trim();
+            this.reportVariablePreviewValues.Clear();
+        }
+    }
+
+    private void GenerateReportVariablesButton_Click(object sender, RoutedEventArgs e)
+        => _ = GenerateReportVariablesFromSqlAsync();
+
+    private async Task GenerateReportVariablesFromSqlAsync()
+    {
+        CommitPendingGridEdits();
+
+        try
+        {
+            Cursor = System.Windows.Input.Cursors.Wait;
+            var preview = await PreviewReportVariablesSqlAsync(showValidationMessages: true);
+            if (preview is null)
+            {
+                return;
+            }
+
+            var added = MergeReportVariablesFromColumns(preview.Columns);
+            UpdateReportVariablePreviewValues(preview);
+            RefreshVisibleTemplatePreviews();
+
+            MessageBox.Show(
+                this,
+                added == 0
+                    ? "No new report variables were added. Existing variables were preserved."
+                    : $"Report variables generated. Added: {added}.",
+                "sp2rdlGenExtension",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not generate report variables from SQL:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            Cursor = null;
+        }
+    }
+
+    private async Task RefreshReportVariablePreviewAsync(bool force = false)
+    {
+        if (!force && ChkMemorandumPreview.IsChecked != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var preview = await PreviewReportVariablesSqlAsync(showValidationMessages: false);
+            if (preview is not null)
+            {
+                UpdateReportVariablePreviewValues(preview);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch
+        {
+            // Preview refresh is opportunistic; explicit Generate variables still reports errors.
+        }
+
+        RefreshVisibleTemplatePreviews();
+    }
+
+    private async Task<DataTable?> PreviewReportVariablesSqlAsync(bool showValidationMessages)
+    {
+        if (string.IsNullOrWhiteSpace(TxtReportVariablesSql.Text))
+        {
+            if (showValidationMessages)
+            {
+                MessageBox.Show(this, "Report variables SQL is required.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(TxtConnectionString.Text))
+        {
+            if (showValidationMessages)
+            {
+                MessageBox.Show(this, "Connection string is required to inspect report variables SQL.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            return null;
+        }
+
+        return await this.sqlIntrospector.PreviewSqlAsync(
+            TxtConnectionString.Text.Trim(),
+            TxtReportVariablesSql.Text.Trim(),
+            this.cts.Token);
+    }
+
+    private int MergeReportVariablesFromColumns(DataColumnCollection columns)
+    {
+        var added = 0;
+        foreach (DataColumn column in columns)
+        {
+            var columnName = column.ColumnName?.Trim();
+            if (string.IsNullOrWhiteSpace(columnName))
+            {
+                continue;
+            }
+
+            var existing = this.reportVariables.FirstOrDefault(variable =>
+                string.Equals(variable.Name, columnName, StringComparison.OrdinalIgnoreCase));
+            if (existing is null)
+            {
+                this.reportVariables.Add(new ReportVariableConfig
+                {
+                    Enabled = true,
+                    Name = columnName,
+                    SourceColumnName = columnName
+                });
+                added++;
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(existing.SourceColumnName))
+            {
+                existing.SourceColumnName = columnName;
+            }
+        }
+
+        return added;
+    }
+
+    private void UpdateReportVariablePreviewValues(DataTable preview)
+    {
+        this.reportVariablePreviewValues.Clear();
+        if (preview.Rows.Count == 0)
+        {
+            return;
+        }
+
+        var row = preview.Rows[0];
+        foreach (DataColumn column in preview.Columns)
+        {
+            var columnName = column.ColumnName?.Trim();
+            if (string.IsNullOrWhiteSpace(columnName))
+            {
+                continue;
+            }
+
+            var value = row[column] is DBNull ? null : Convert.ToString(row[column], CultureInfo.CurrentCulture);
+            this.reportVariablePreviewValues[columnName] = value;
+        }
+    }
+
+    private void RefreshVisibleTemplatePreviews()
+    {
+        if (ChkMemorandumPreview.IsChecked == true)
+        {
+            UpdateTemplatePreview(TxtMemorandumTemplate, BrowserMemorandumPreview);
+        }
+
+    }
+
+    private void InitializeTemplateContextMenus()
+    {
+        TxtMemorandumTemplate.ContextMenu = BuildTemplateContextMenu(TxtMemorandumTemplate);
+        TxtReportSummaryColumn1Template.ContextMenu = BuildTemplateContextMenu(TxtReportSummaryColumn1Template);
+        TxtReportSummaryColumn2Template.ContextMenu = BuildTemplateContextMenu(TxtReportSummaryColumn2Template);
+        TxtReportSummaryColumn3Template.ContextMenu = BuildTemplateContextMenu(TxtReportSummaryColumn3Template);
+    }
+
+    private void MemorandumBoldButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<b>", "</b>");
+
+    private void MemorandumItalicButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<i>", "</i>");
+
+    private void MemorandumUnderlineButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<u>", "</u>");
+
+    private void MemorandumAlignLeftButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<p style=\"text-align:left;\">", "</p>");
+
+    private void MemorandumAlignCenterButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<p style=\"text-align:center;\">", "</p>");
+
+    private void MemorandumAlignRightButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<p style=\"text-align:right;\">", "</p>");
+
+    private void MemorandumBulletButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<ul><li>", "</li></ul>");
+
+    private void MemorandumNumberButton_Click(object sender, RoutedEventArgs e)
+        => WrapMemorandumSelection("<ol><li>", "</li></ol>");
+
+    private void WrapMemorandumSelection(string before, string after)
+    {
+        ChkMemorandumPreview.IsChecked = false;
+        var selected = TxtMemorandumTemplate.SelectedText;
+        TxtMemorandumTemplate.SelectedText = before + selected + after;
+        TxtMemorandumTemplate.Focus();
+    }
+
+    private void InsertMemorandumText(string text)
+    {
+        ChkMemorandumPreview.IsChecked = false;
+        TxtMemorandumTemplate.SelectedText = text;
+        TxtMemorandumTemplate.Focus();
+    }
+
+    private void MemorandumPreviewCheckBox_Changed(object sender, RoutedEventArgs e)
+        => _ = SetTemplatePreviewModeAsync(TxtMemorandumTemplate, BrowserMemorandumPreview, ChkMemorandumPreview.IsChecked == true);
+
+    private void ReportSummaryBoldButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<b>", "</b>");
+
+    private void ReportSummaryItalicButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<i>", "</i>");
+
+    private void ReportSummaryUnderlineButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<u>", "</u>");
+
+    private void ReportSummaryAlignLeftButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<p style=\"text-align:left;\">", "</p>");
+
+    private void ReportSummaryAlignCenterButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<p style=\"text-align:center;\">", "</p>");
+
+    private void ReportSummaryAlignRightButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<p style=\"text-align:right;\">", "</p>");
+
+    private void ReportSummaryBulletButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<ul><li>", "</li></ul>");
+
+    private void ReportSummaryNumberButton_Click(object sender, RoutedEventArgs e)
+        => WrapActiveReportSummarySelection("<ol><li>", "</li></ol>");
+
+    private void ReportSummaryLineButton_Click(object sender, RoutedEventArgs e)
+        => InsertActiveReportSummaryText("{Line}");
+
+    private void ReportSummaryTemplate_GotKeyboardFocus(object sender, System.Windows.Input.KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is TextBox textBox)
+        {
+            this.activeReportSummaryTemplateBox = textBox;
+        }
+    }
+
+    private TextBox GetActiveReportSummaryTemplateBox()
+        => this.activeReportSummaryTemplateBox
+            ?? TxtReportSummaryColumn1Template;
+
+    private void WrapActiveReportSummarySelection(string before, string after)
+    {
+        var editor = GetActiveReportSummaryTemplateBox();
+        var selected = editor.SelectedText;
+        editor.SelectedText = before + selected + after;
+        editor.Focus();
+    }
+
+    private void InsertActiveReportSummaryText(string text)
+    {
+        var editor = GetActiveReportSummaryTemplateBox();
+        editor.SelectedText = text;
+        editor.Focus();
+    }
+
+    private void TemplateTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (!IsInitialized)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(sender, TxtMemorandumTemplate) && ChkMemorandumPreview.IsChecked == true)
+        {
+            UpdateTemplatePreview(TxtMemorandumTemplate, BrowserMemorandumPreview);
+        }
+    }
+
+    private async Task SetTemplatePreviewModeAsync(TextBox editor, WebBrowser preview, bool enabled)
+    {
+        if (enabled)
+        {
+            editor.Visibility = Visibility.Collapsed;
+            preview.Visibility = Visibility.Visible;
+
+            // Force a layout pass so the WebBrowser HWND is realized before NavigateToString;
+            // without this the very first NavigateToString after visibility flip is a no-op
+            // and users had to toggle the preview checkbox twice to see content.
+            preview.UpdateLayout();
+            await Dispatcher.Yield(DispatcherPriority.Loaded);
+
+            await RefreshReportVariablePreviewAsync(force: true);
+            UpdateTemplatePreview(editor, preview);
+            return;
+        }
+
+        preview.Visibility = Visibility.Collapsed;
+        editor.Visibility = Visibility.Visible;
+        editor.Focus();
+    }
+
+    private void UpdateTemplatePreview(TextBox editor, WebBrowser preview)
+    {
+        CommitPendingGridEdits();
+
+        var compactTemplate = PrepareHtmlTemplateForPreview(editor.Text);
+        var body = ResolveTemplatePreviewValues(compactTemplate.Html);
+        body = body.Replace("\r\n", "<br/>", StringComparison.Ordinal)
+            .Replace("\n", "<br/>", StringComparison.Ordinal);
+
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            body = "&nbsp;";
+        }
+
+        var html = "<!doctype html><html><head><meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\" />"
+            + "<style>"
+            + "body{margin:8px;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;line-height:1.15;color:#111;background:#fff;}"
+            + "p{margin:0;line-height:1.15;}ul,ol{margin-top:0;margin-bottom:4px;padding-left:22px;}"
+            + "</style></head><body>"
+            + "<div style=\"text-align:" + compactTemplate.CssTextAlign + ";\">"
+            + body
+            + "</div>"
+            + "</body></html>";
+
+        preview.NavigateToString(html);
+    }
+
+    private static HtmlTemplateForPreview PrepareHtmlTemplateForPreview(string template)
+    {
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return new HtmlTemplateForPreview(string.Empty, "left");
+        }
+
+        var matches = HtmlParagraphRegex.Matches(template);
+        if (matches.Count == 0)
+        {
+            return new HtmlTemplateForPreview(template, "left");
+        }
+
+        var paragraphAlignments = matches
+            .Select(match => ExtractParagraphTextAlign(match.Groups["attributes"].Value))
+            .Where(align => !string.IsNullOrWhiteSpace(align))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var textAlign = paragraphAlignments.Count == 1 ? paragraphAlignments[0]!.ToLowerInvariant() : "left";
+
+        var compactHtml = new StringBuilder();
+        var currentIndex = 0;
+        for (var i = 0; i < matches.Count; i++)
+        {
+            var match = matches[i];
+            compactHtml.Append(template, currentIndex, match.Index - currentIndex);
+            compactHtml.Append(match.Groups["content"].Value.Trim());
+            if (i < matches.Count - 1)
+            {
+                compactHtml.Append("<br/>");
+            }
+
+            currentIndex = match.Index + match.Length;
+        }
+
+        compactHtml.Append(template, currentIndex, template.Length - currentIndex);
+        return new HtmlTemplateForPreview(compactHtml.ToString(), textAlign);
+    }
+
+    private static string? ExtractParagraphTextAlign(string attributes)
+    {
+        var match = CssTextAlignRegex.Match(attributes);
+        return match.Success ? match.Groups["align"].Value : null;
+    }
+
+    private sealed record HtmlTemplateForPreview(string Html, string CssTextAlign);
+
+    private string ResolveTemplatePreviewValues(string template)
+    {
+        var values = BuildTemplatePreviewValues();
+        return TemplatePlaceholderRegex.Replace(template, match =>
+        {
+            var name = match.Groups["name"].Value;
+            if (string.Equals(name, "Line", StringComparison.OrdinalIgnoreCase))
+            {
+                return "<hr style=\"border:0; border-top:1px solid #A6A6A6; margin:4px 0;\"/>";
+            }
+
+            return values.TryGetValue(name, out var value)
+                ? WebUtility.HtmlEncode(value ?? string.Empty)
+                : match.Value;
+        });
+    }
+
+    private Dictionary<string, string?> BuildTemplatePreviewValues()
+    {
+        var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var variable in this.reportVariables.Where(variable => variable.Enabled && !string.IsNullOrWhiteSpace(variable.Name)))
+        {
+            var sourceValue = !string.IsNullOrWhiteSpace(variable.SourceColumnName)
+                && this.reportVariablePreviewValues.TryGetValue(variable.SourceColumnName.Trim(), out var previewValue)
+                    ? previewValue
+                    : null;
+            values[variable.Name.Trim()] = FirstNonBlank(variable.StaticValue, sourceValue, variable.FallbackValue);
+        }
+
+        values["CompanyName"] = FirstNonBlank(values.TryGetValue("CompanyName", out var companyValue) ? companyValue : null, TxtCompanyName.Text.Trim());
+        values["ReportTitle"] = string.IsNullOrWhiteSpace(TxtReportTitle.Text) ? TxtReportName.Text.Trim() : TxtReportTitle.Text.Trim();
+
+        return values;
+    }
+
+    private static string? FirstNonBlank(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+
+    private void TemplateTextBox_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if (sender is not TextBox textBox)
+        {
+            return;
+        }
+
+        textBox.ContextMenu = BuildTemplateContextMenu(textBox);
+    }
+
+    private ContextMenu BuildTemplateContextMenu(TextBox textBox)
+    {
+        var menu = new ContextMenu();
+        var systemPlaceholders = new[] { "CompanyName", "ReportTitle", "Line" };
+        var reportVariables = this.reportVariables
+            .Where(variable => variable.Enabled && !string.IsNullOrWhiteSpace(variable.Name))
+            .Select(variable => variable.Name.Trim())
+            .Where(variable => !systemPlaceholders.Contains(variable, StringComparer.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        var systemMenu = new MenuItem { Header = "System placeholders" };
+        foreach (var placeholder in systemPlaceholders)
+        {
+            systemMenu.Items.Add(BuildTemplatePlaceholderMenuItem(textBox, placeholder));
+        }
+
+        menu.Items.Add(systemMenu);
+
+        var variablesMenu = new MenuItem { Header = "Report variables" };
+        if (reportVariables.Count == 0)
+        {
+            variablesMenu.Items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
+        }
+        else
+        {
+            foreach (var variable in reportVariables)
+            {
+                variablesMenu.Items.Add(BuildTemplatePlaceholderMenuItem(textBox, variable));
+            }
+        }
+
+        menu.Items.Add(variablesMenu);
+        return menu;
+    }
+
+    private static MenuItem BuildTemplatePlaceholderMenuItem(TextBox textBox, string placeholder)
+    {
+        var menuItem = new MenuItem { Header = "{" + placeholder + "}" };
+        menuItem.Click += (_, _) =>
+        {
+            textBox.SelectedText = "{" + placeholder + "}";
+            textBox.Focus();
+        };
+        return menuItem;
+    }
+
+    private void DependsOnDropDownButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if (sender is not Button button || button.DataContext is not ReportParameter parameter)
+        {
+            return;
+        }
+
+        var availableParameters = GetEarlierParameterNames(parameter);
+        var selectedValues = ParseDependencyNames(parameter.DependsOnParameterName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var contextMenu = new ContextMenu();
+
+        foreach (var parameterName in availableParameters.OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase))
+        {
+            var menuItem = new MenuItem
+            {
+                Header = parameterName,
+                IsCheckable = true,
+                IsChecked = selectedValues.Contains(parameterName),
+                StaysOpenOnClick = true
+            };
+            menuItem.Click += (_, _) =>
+            {
+                if (menuItem.IsChecked)
+                {
+                    selectedValues.Add(parameterName);
+                }
+                else
+                {
+                    selectedValues.Remove(parameterName);
+                }
+
+                parameter.DependsOnParameterName = selectedValues.Count == 0
+                    ? null
+                    : string.Join(", ", selectedValues.OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase));
+                GridReportParameters.Items.Refresh();
+            };
+            contextMenu.Items.Add(menuItem);
+        }
+
+        if (contextMenu.Items.Count == 0)
+        {
+            contextMenu.Items.Add(new MenuItem
+            {
+                Header = "No other parameters",
+                IsEnabled = false
+            });
+        }
+
+        button.ContextMenu = contextMenu;
+        contextMenu.PlacementTarget = button;
+        contextMenu.IsOpen = true;
+    }
+
+    private void CompareToDropDownButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if (sender is not Button button || button.DataContext is not ReportParameter parameter)
+        {
+            return;
+        }
+
+        var contextMenu = new ContextMenu();
+        var clearItem = new MenuItem
+        {
+            Header = "(none)",
+            IsCheckable = true,
+            IsChecked = string.IsNullOrWhiteSpace(parameter.CompareToParameterName)
+        };
+        clearItem.Click += (_, _) =>
+        {
+            parameter.CompareToParameterName = null;
+            parameter.CompareOperator = null;
+            GridReportParameters.Items.Refresh();
+        };
+        contextMenu.Items.Add(clearItem);
+        contextMenu.Items.Add(new Separator());
+
+        foreach (var parameterName in GetEarlierParameterNames(parameter))
+        {
+            var menuItem = new MenuItem
+            {
+                Header = parameterName,
+                IsCheckable = true,
+                IsChecked = string.Equals(parameter.CompareToParameterName, parameterName, StringComparison.OrdinalIgnoreCase)
+            };
+            menuItem.Click += (_, _) =>
+            {
+                parameter.CompareToParameterName = parameterName;
+                parameter.CompareOperator = string.IsNullOrWhiteSpace(parameter.CompareOperator) ? ">=" : parameter.CompareOperator;
+                GridReportParameters.Items.Refresh();
+            };
+            contextMenu.Items.Add(menuItem);
+        }
+
+        button.ContextMenu = contextMenu;
+        contextMenu.PlacementTarget = button;
+        contextMenu.IsOpen = true;
+    }
+
+    private async Task<string?> SuggestLookupSqlForParameterAsync(ReportParameter parameter)
+    {
+        CommitPendingGridEdits();
+
+        if (string.IsNullOrWhiteSpace(TxtConnectionString.Text))
+        {
+            MessageBox.Show(this, "Connection string is required.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(parameter.Name))
+        {
+            MessageBox.Show(this, "Parameter name is required.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return null;
+        }
+
+        var suggestion = await this.sqlIntrospector.SuggestLookupSqlAsync(
+            TxtConnectionString.Text.Trim(),
+            parameter.Name,
+            GetPrimaryDependencyName(parameter.DependsOnParameterName),
+            IsMultiValueReportParameter(GetPrimaryDependencyName(parameter.DependsOnParameterName)),
+            parameter.Nullable,
+            this.cts.Token);
+
+        if (suggestion is null)
+        {
+            return null;
+        }
+
+        parameter.Lookup = new LookupConfig
+        {
+            DatasetName = suggestion.DatasetName,
+            ValueField = suggestion.ValueField,
+            LabelField = suggestion.LabelField
+        };
+
+        return suggestion.Sql;
+    }
+
+    private async Task<System.Collections.IEnumerable?> PreviewSqlAsync(string sql)
+        => (await this.sqlIntrospector.PreviewSqlAsync(TxtConnectionString.Text.Trim(), sql, this.cts.Token)).DefaultView;
+
 
     private async Task InspectProcedureAsync()
     {
@@ -178,12 +1227,11 @@ public partial class ReportSetupDialog : Window
             LblMetadataStatus.Text = "Inspecting stored procedure...";
 
             var connectionString = TxtConnectionString.Text.Trim();
-            this.currentMetadata = await Task.Run(() =>
-                this.sqlIntrospector.ReadStoredProcedureAsync(connectionString, storedProcedureName, CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult());
+            this.currentMetadata = await this.sqlIntrospector
+                .ReadStoredProcedureAsync(connectionString, storedProcedureName, this.cts.Token);
 
             GridParameters.ItemsSource = this.currentMetadata.Parameters;
+            UpdateStoredProcedureParameterChoices(this.currentMetadata.Parameters);
             this.fieldDrafts.Clear();
             foreach (var field in this.currentMetadata.Fields.Select(DatasetFieldDraft.FromDatasetField))
             {
@@ -197,6 +1245,12 @@ public partial class ReportSetupDialog : Window
             {
                 TxtReportName.Text = this.currentMetadata.ProcedureName;
             }
+
+            ApplyReportParameters(ReportModelFactory.FromStoredProcedure(this.currentMetadata).Parameters);
+            AutoBindReportParametersToStoredProcedureParameters(this.currentMetadata.Parameters);
+        }
+        catch (OperationCanceledException)
+        {
         }
         catch (Exception ex)
         {
@@ -228,10 +1282,8 @@ public partial class ReportSetupDialog : Window
             Cursor = System.Windows.Input.Cursors.Wait;
             LblMetadataStatus.Text = "Suggesting columns from procedure text...";
             var connectionString = TxtConnectionString.Text.Trim();
-            var suggestedFields = await Task.Run(() =>
-                this.sqlIntrospector.SuggestFieldsFromProcedureTextAsync(connectionString, storedProcedureName, CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult());
+            var suggestedFields = await this.sqlIntrospector
+                .SuggestFieldsFromProcedureTextAsync(connectionString, storedProcedureName, this.cts.Token);
 
             if (suggestedFields.Count == 0)
             {
@@ -247,6 +1299,9 @@ public partial class ReportSetupDialog : Window
 
             LblMetadataStatus.Text = $"Suggested {suggestedFields.Count} column(s) from the last SELECT. Review SQL types before saving.";
         }
+        catch (OperationCanceledException)
+        {
+        }
         catch (Exception ex)
         {
             MessageBox.Show(this, $"Could not suggest columns from procedure text:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -259,24 +1314,129 @@ public partial class ReportSetupDialog : Window
 
     private void GenerateButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!ValidateOutputPathBeforeGenerate())
+        {
+            return;
+        }
+
         var reportModel = BuildReportModelFromCurrentState();
+        var outputPath = TxtOutputPath.Text.Trim();
+        reportModel.OutputPath = outputPath;
 
         Request = new ReportGenerationRequest
         {
             ConnectionString = TxtConnectionString.Text.Trim(),
-            StoredProcedureName = (CmbStoredProcedure.SelectedItem as Services.StoredProcedureSummary)?.DisplayName ?? string.Empty,
-            OutputPath = TxtOutputPath.Text.Trim(),
+            StoredProcedureName = ReadStoredProcedureName(),
+            OutputPath = outputPath,
             ReportModel = reportModel
         };
 
-        DialogResult = true;
-        Close();
+        try
+        {
+            Cursor = System.Windows.Input.Cursors.Wait;
+            var result = this.outputWriter.Write(outputPath, reportModel);
+            MessageBox.Show(
+                this,
+                BuildGenerateSuccessMessage(reportModel, result),
+                "sp2rdlGenExtension",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                this,
+                $"Could not generate report:\n\n{ex.Message}",
+                "sp2rdlGenExtension",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            Cursor = null;
+        }
     }
 
-    private void CancelButton_Click(object sender, RoutedEventArgs e)
+    private static string BuildGenerateSuccessMessage(ReportModel model, ReportOutputResult result)
     {
+        var message = new StringBuilder()
+            .AppendLine("Report generated:")
+            .AppendLine()
+            .AppendLine(result.ReportPath)
+            .AppendLine()
+            .AppendLine("State JSON:")
+            .AppendLine(result.ModelPath);
+
+        if (result.LocalizationSeedPath is not null)
+        {
+            message
+                .AppendLine()
+                .AppendLine("Localization seed SQL:")
+                .AppendLine(result.LocalizationSeedPath);
+        }
+        else if (model.Localization.Enabled)
+        {
+            message
+                .AppendLine()
+                .AppendLine("Localization seed SQL was not generated. Check that 'Generate seed SQL next to report' is enabled and that the report has labels.");
+        }
+
+        return message.ToString();
+    }
+
+    private bool ValidateOutputPathBeforeGenerate()
+    {
+        var outputPath = TxtOutputPath.Text?.Trim() ?? string.Empty;
+
+        string? error = null;
+        if (string.IsNullOrWhiteSpace(outputPath))
+        {
+            error = "Output file path is required. Choose the output .rdl/.rdlc location and name on the Output tab.";
+        }
+        else
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(Path.GetFileName(outputPath)))
+                {
+                    error = "Output file path must include a file name, not only a folder.";
+                }
+                else if (!Path.IsPathRooted(outputPath))
+                {
+                    error = "Output file path must be absolute (rooted) so the file lands in a known location.";
+                }
+            }
+            catch (ArgumentException)
+            {
+                error = "Output file path contains invalid characters.";
+            }
+        }
+
+        if (error is null)
+        {
+            return true;
+        }
+
+        MainTabs.SelectedItem = OutputTab;
+        TxtOutputPath.Focus();
+        MessageBox.Show(
+            this,
+            error,
+            "sp2rdlGenExtension",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
+        return false;
+    }
+
+    private void CloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!this.cts.IsCancellationRequested)
+        {
+            this.cts.Cancel();
+        }
         DialogResult = false;
         Close();
+        DebugExpShutdown.TryCloseExpInstance();
     }
 
     private OutputMode ReadOutputMode()
@@ -285,6 +1445,14 @@ public partial class ReportSetupDialog : Window
         return string.Equals(tag, nameof(OutputMode.Rdlc), StringComparison.OrdinalIgnoreCase)
             ? OutputMode.Rdlc
             : OutputMode.Rdl;
+    }
+
+    private ReportPurpose ReadReportPurpose()
+    {
+        var tag = (CmbReportPurpose.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return Enum.TryParse<ReportPurpose>(tag, ignoreCase: true, out var purpose)
+            ? purpose
+            : ReportPurpose.MainReport;
     }
 
     private StoredProcedureMetadata? BuildCurrentMetadata()
@@ -308,6 +1476,11 @@ public partial class ReportSetupDialog : Window
 
     private ReportModel BuildReportModelFromCurrentState()
     {
+        // This method is the single UI -> model boundary. Keeping persistence
+        // mapping here makes Save state, Generate, and future automation use the
+        // same configuration snapshot.
+        CommitPendingGridEdits();
+
         var metadata = BuildCurrentMetadata();
         var reportModel = metadata is null
             ? BuildReportModelWithoutMetadata()
@@ -317,12 +1490,81 @@ public partial class ReportSetupDialog : Window
         reportModel.Author = NormalizeOptional(TxtAuthor.Text);
         reportModel.Description = NormalizeOptional(TxtDescription.Text);
         reportModel.OutputMode = ReadOutputMode();
-        reportModel.SourceConnectionString = SanitizeConnectionString(TxtConnectionString.Text);
+        reportModel.Purpose = ReadReportPurpose();
+        reportModel.SourceConnectionString = NormalizeOptional(TxtConnectionString.Text);
         reportModel.SourceStoredProcedureName = ReadStoredProcedureName();
         reportModel.OutputPath = NormalizeOptional(TxtOutputPath.Text);
+        reportModel.BaseFontFamily = ReadBaseFontFamily();
+        reportModel.ReportTitle.Enabled = ChkReportTitleEnabled.IsChecked == true;
+        reportModel.ReportTitle.Text = string.IsNullOrWhiteSpace(TxtReportTitle.Text)
+            ? reportModel.Name
+            : TxtReportTitle.Text.Trim();
+        reportModel.ReportTitle.ShowInPageHeaderAfterFirstPage = false;
+        reportModel.CompanyInfo.Text = TxtCompanyName.Text.Trim();
+        reportModel.CompanyInfo.SqlExpression = NormalizeOptional(TxtCompanySql.Text);
+        reportModel.CompanyInfo.BackendEndpoint = NormalizeOptional(TxtCompanyEndpoint.Text);
+        reportModel.ReportVariables.DynamicSource.Enabled = !string.IsNullOrWhiteSpace(TxtReportVariablesSql.Text);
+        reportModel.ReportVariables.DynamicSource.SqlExpression = TxtReportVariablesSql.Text.Trim();
+        reportModel.ReportVariables.Items = BuildReportVariablesFromGrid();
+        reportModel.Localization = BuildLocalizationConfig();
+        reportModel.TablixStyle = BuildTablixStyle();
+        UpsertReportVariable(reportModel.ReportVariables, "CompanyName", "CompanyName", reportModel.CompanyInfo.Text);
+        reportModel.Memorandum.Enabled = ChkMemorandumEnabled.IsChecked == true;
+        reportModel.Memorandum.LayoutMode = ReadReportBandLayoutMode(CmbMemorandumLayoutMode);
+        reportModel.Memorandum.SubreportPath = NormalizeOptional(TxtMemorandumSubreport.Text);
+        reportModel.Memorandum.SubreportName = BuildSubreportName(reportModel.Memorandum.SubreportPath);
+        reportModel.Memorandum.SubreportServerPath = NormalizeOptional(TxtMemorandumSubreportServerPath.Text);
+        reportModel.Memorandum.FallbackToInline = ChkMemorandumFallbackInline.IsChecked == true;
+        reportModel.Memorandum.RichTextParagraphs.Clear();
+        reportModel.Memorandum.TextTemplate = TxtMemorandumTemplate.Text.Trim();
+        reportModel.Memorandum.LogoImagePath = NormalizeOptional(TxtMemorandumLogo.Text);
+        reportModel.Memorandum.ShowVerticalSeparator = ChkMemorandumVerticalLine.IsChecked == true;
+        reportModel.Memorandum.ShowLogoBottomLine = ChkMemorandumLogoBottomLine.IsChecked == true;
+        reportModel.Memorandum.ShowBottomLine = ChkMemorandumBottomLine.IsChecked == true;
+        reportModel.Memorandum.HeightInCentimeters = ReadPositiveDouble(TxtMemorandumHeight.Text, reportModel.Memorandum.HeightInCentimeters);
+        reportModel.Memorandum.LogoAlignment = ReadEnumComboBox(CmbMemorandumLogoAlignment, MemorandumLogoAlignment.Left);
+        reportModel.Memorandum.TextPlacement = ReadEnumComboBox(CmbMemorandumTextPlacement, MemorandumTextPlacement.BesideLogo);
+        reportModel.ReportSummary.Enabled = ChkReportSummaryEnabled.IsChecked == true;
+        reportModel.ReportSummary.LayoutMode = ReadReportBandLayoutMode(CmbReportSummaryLayoutMode);
+        reportModel.ReportSummary.SubreportPath = NormalizeOptional(TxtReportSummarySubreport.Text);
+        reportModel.ReportSummary.SubreportName = BuildSubreportName(reportModel.ReportSummary.SubreportPath);
+        reportModel.ReportSummary.SubreportServerPath = NormalizeOptional(TxtReportSummarySubreportServerPath.Text);
+        reportModel.ReportSummary.FallbackToInline = ChkReportSummaryFallbackInline.IsChecked == true;
+        reportModel.ReportSummary.ShowTopLine = ChkReportSummaryTopLine.IsChecked == true;
+        reportModel.ReportSummary.ColumnCount = ReadReportSummaryColumnCount();
+        reportModel.ReportSummary.Columns = BuildReportSummaryColumnsFromUi(reportModel.ReportSummary.ColumnCount);
+        reportModel.ReportSummary.HeightInCentimeters = ReadPositiveDouble(TxtReportSummaryHeight.Text, reportModel.ReportSummary.HeightInCentimeters);
         reportModel.PageSetup = BuildPageSetup();
+        reportModel.PageHeader.Enabled = ChkPageHeaderEnabled.IsChecked == true;
         reportModel.PageHeader.LeftText = TxtHeaderLeft.Text.Trim();
         reportModel.PageHeader.RightText = TxtHeaderRight.Text.Trim();
+        reportModel.PageHeader.HeightInCentimeters = ReadPositiveDouble(TxtPageHeaderHeight.Text, reportModel.PageHeader.HeightInCentimeters);
+        reportModel.PageHeader.FontSizeInPoints = ReadPositiveDouble(TxtPageHeaderFontSize.Text, reportModel.PageHeader.FontSizeInPoints);
+        reportModel.PageHeader.PrintOnFirstPage = ChkPageHeaderFirstPage.IsChecked == true;
+        reportModel.PageFooter.Enabled = ChkPageFooterEnabled.IsChecked == true;
+        reportModel.PageFooter.LeftText = TxtFooterLeft.Text.Trim();
+        reportModel.PageFooter.RightText = TxtFooterRight.Text.Trim();
+        reportModel.PageFooter.LogoImagePath = NormalizeOptional(TxtFooterLogo.Text);
+        reportModel.PageFooter.ShowPageNumber = ChkPageFooterNumber.IsChecked == true;
+        reportModel.PageFooter.ShowTopLine = ChkPageFooterTopLine.IsChecked == true;
+        reportModel.PageFooter.DisplayMode = ReadPageFooterDisplayMode();
+        reportModel.PageFooter.HeightInCentimeters = ReadPositiveDouble(TxtPageFooterHeight.Text, reportModel.PageFooter.HeightInCentimeters);
+        ApplyPageFooterDisplayModeFlags(reportModel.PageFooter);
+        reportModel.PageFooter.PrintOnLastPage = ChkPageFooterLastPage.IsChecked == true;
+        if (reportModel.Purpose != ReportPurpose.MainReport)
+        {
+            reportModel.PageHeader.Enabled = false;
+            reportModel.PageFooter.Enabled = false;
+        }
+        reportModel.Parameters = BuildReportParametersFromGrid();
+        NormalizeReportParameters(reportModel.Parameters);
+        if (metadata is not null)
+        {
+            AutoBindReportParametersToStoredProcedureParameters(reportModel.Parameters, metadata.Parameters);
+        }
+
+        ApplyAuxiliaryParameterDatasets(reportModel);
+        ApplyDatasetParameterBindings(reportModel);
 
         return reportModel;
     }
@@ -341,7 +1583,7 @@ public partial class ReportSetupDialog : Window
 
         var dataset = new DatasetConfig
         {
-            Name = "DsMain",
+            Name = "dsMain",
             Command = storedProcedureName,
             CommandKind = CommandKind.StoredProcedure,
             Fields = fields
@@ -351,20 +1593,71 @@ public partial class ReportSetupDialog : Window
         {
             Name = TxtReportName.Text.Trim(),
             MainDatasetName = dataset.Name,
-            Datasets = string.IsNullOrWhiteSpace(storedProcedureName) && fields.Count == 0 ? [] : [dataset]
+            Datasets = string.IsNullOrWhiteSpace(storedProcedureName) && fields.Count == 0 ? [] : [dataset],
+            Parameters = BuildReportParametersFromGrid()
         };
     }
 
     private void ApplyReportModel(ReportModel model)
     {
+        // This is the inverse model -> UI boundary used by Load state and by the
+        // initial stored procedure inspection result.
         TxtReportName.Text = model.Name;
         TxtAuthor.Text = model.Author ?? string.Empty;
         TxtDescription.Text = model.Description ?? string.Empty;
         TxtConnectionString.Text = model.SourceConnectionString ?? string.Empty;
         TxtOutputPath.Text = model.OutputPath ?? string.Empty;
+        TxtReportTitle.Text = model.ReportTitle.Text;
+        ChkReportTitleEnabled.IsChecked = model.ReportTitle.Enabled;
+        TxtCompanyName.Text = model.CompanyInfo.Text;
+        TxtCompanySql.Text = model.CompanyInfo.SqlExpression ?? string.Empty;
+        TxtCompanyEndpoint.Text = model.CompanyInfo.BackendEndpoint ?? string.Empty;
+        TxtReportVariablesSql.Text = model.ReportVariables.DynamicSource.SqlExpression;
+        ApplyReportVariables(model.ReportVariables.Items);
+        ApplyLocalizationConfig(model.Localization ?? new LocalizationConfig());
+        ApplyTablixStyle(model.TablixStyle ?? new TablixStyleConfig());
+        ChkMemorandumEnabled.IsChecked = model.Memorandum.Enabled;
+        SetReportBandLayoutMode(CmbMemorandumLayoutMode, model.Memorandum.LayoutMode);
+        TxtMemorandumSubreport.Text = model.Memorandum.SubreportPath ?? model.Memorandum.SubreportName ?? string.Empty;
+        TxtMemorandumSubreportServerPath.Text = model.Memorandum.SubreportServerPath ?? model.Memorandum.SubreportName ?? string.Empty;
+        ChkMemorandumFallbackInline.IsChecked = model.Memorandum.FallbackToInline;
+        TxtMemorandumTemplate.Text = string.IsNullOrWhiteSpace(model.Memorandum.TextTemplate)
+            ? "<b>{CompanyName}</b>"
+            : model.Memorandum.TextTemplate;
+        TxtMemorandumLogo.Text = model.Memorandum.LogoImagePath ?? string.Empty;
+        ChkMemorandumVerticalLine.IsChecked = model.Memorandum.ShowVerticalSeparator;
+        ChkMemorandumLogoBottomLine.IsChecked = model.Memorandum.ShowLogoBottomLine;
+        ChkMemorandumBottomLine.IsChecked = model.Memorandum.ShowBottomLine;
+        TxtMemorandumHeight.Text = ToUiNumber(model.Memorandum.HeightInCentimeters);
+        SetEnumComboBox(CmbMemorandumLogoAlignment, model.Memorandum.LogoAlignment);
+        SetEnumComboBox(CmbMemorandumTextPlacement, model.Memorandum.TextPlacement);
+        UpdateMemorandumLogoAlignmentAvailability();
+        ChkReportSummaryEnabled.IsChecked = model.ReportSummary.Enabled;
+        SetReportBandLayoutMode(CmbReportSummaryLayoutMode, model.ReportSummary.LayoutMode);
+        TxtReportSummarySubreport.Text = model.ReportSummary.SubreportPath ?? model.ReportSummary.SubreportName ?? string.Empty;
+        TxtReportSummarySubreportServerPath.Text = model.ReportSummary.SubreportServerPath ?? model.ReportSummary.SubreportName ?? string.Empty;
+        ChkReportSummaryFallbackInline.IsChecked = model.ReportSummary.FallbackToInline;
+        ChkReportSummaryTopLine.IsChecked = model.ReportSummary.ShowTopLine;
+        SetReportSummaryColumns(model.ReportSummary);
+        TxtReportSummaryHeight.Text = ToUiNumber(model.ReportSummary.HeightInCentimeters);
+        ChkPageHeaderEnabled.IsChecked = model.PageHeader.Enabled;
         TxtHeaderLeft.Text = model.PageHeader.LeftText;
         TxtHeaderRight.Text = model.PageHeader.RightText;
+        TxtPageHeaderHeight.Text = ToUiNumber(model.PageHeader.HeightInCentimeters);
+        TxtPageHeaderFontSize.Text = ToUiNumber(model.PageHeader.FontSizeInPoints);
+        ChkPageHeaderFirstPage.IsChecked = model.PageHeader.PrintOnFirstPage;
+        ChkPageFooterEnabled.IsChecked = model.PageFooter.Enabled;
+        TxtFooterLeft.Text = model.PageFooter.LeftText;
+        TxtFooterRight.Text = model.PageFooter.RightText;
+        TxtFooterLogo.Text = model.PageFooter.LogoImagePath ?? string.Empty;
+        ChkPageFooterNumber.IsChecked = model.PageFooter.ShowPageNumber;
+        ChkPageFooterTopLine.IsChecked = model.PageFooter.ShowTopLine;
+        SetPageFooterDisplayMode(ResolvePageFooterDisplayMode(model.PageFooter));
+        TxtPageFooterHeight.Text = ToUiNumber(model.PageFooter.HeightInCentimeters);
+        ChkPageFooterLastPage.IsChecked = model.PageFooter.PrintOnLastPage;
+        SetBaseFontFamily(model.BaseFontFamily);
         SetOutputMode(model.OutputMode);
+        SetReportPurpose(model.Purpose);
         ApplyPageSetup(model.PageSetup);
 
         CmbStoredProcedure.ItemsSource = null;
@@ -385,26 +1678,1028 @@ public partial class ReportSetupDialog : Window
             }
         }
 
-        GridReportParameters.ItemsSource = model.Parameters;
-        GridParameters.ItemsSource = model.Parameters
-            .Select((parameter, index) => new SpParameter(
-                "@" + parameter.Name.TrimStart('@'),
-                parameter.SqlTypeName,
-                parameter.Nullable,
-                !string.IsNullOrWhiteSpace(parameter.DefaultValueExpression),
-                false,
-                index + 1))
-            .ToList();
+        ApplyReportParameters(model.Parameters);
+        var spParameters = BuildStoredProcedureParametersFromModel(model, mainDataset);
+        GridParameters.ItemsSource = spParameters;
 
         this.currentMetadata = mainDataset is null
             ? null
             : new StoredProcedureMetadata(
                 ParseSchemaName(CmbStoredProcedure.Text),
                 ParseProcedureName(CmbStoredProcedure.Text),
-                GridParameters.ItemsSource is IReadOnlyList<SpParameter> spParameters ? spParameters : [],
+                spParameters,
                 mainDataset.Fields);
+        UpdateStoredProcedureParameterChoices(spParameters);
 
         LblMetadataStatus.Text = "State loaded.";
+    }
+
+    private static IReadOnlyList<SpParameter> BuildStoredProcedureParametersFromModel(ReportModel model, DatasetConfig? mainDataset)
+    {
+        if (mainDataset is null)
+        {
+            return [];
+        }
+
+        var parametersByName = model.Parameters
+            .ToDictionary(parameter => parameter.Name.TrimStart('@'), StringComparer.OrdinalIgnoreCase);
+
+        return mainDataset.ParameterBindings
+            .Select((binding, index) =>
+            {
+                var reportParameterName = binding.ReportParameterName.TrimStart('@');
+                parametersByName.TryGetValue(reportParameterName, out var reportParameter);
+
+                return new SpParameter(
+                    EnsureAtPrefixLocal(binding.DatasetParameterName),
+                    reportParameter?.SqlTypeName ?? "nvarchar",
+                    reportParameter?.Nullable ?? true,
+                    !string.IsNullOrWhiteSpace(reportParameter?.DefaultValueExpression)
+                        || !string.IsNullOrWhiteSpace(reportParameter?.DefaultValueSql),
+                    false,
+                    index + 1);
+            })
+            .ToList();
+    }
+
+    private static string EnsureAtPrefixLocal(string value)
+        => value.StartsWith('@') ? value : "@" + value;
+
+    private static void UpsertReportVariable(
+        ReportVariablesConfig variables,
+        string name,
+        string sourceColumnName,
+        string fallbackValue)
+    {
+        var item = variables.Items.FirstOrDefault(variable =>
+            string.Equals(variable.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (item is null)
+        {
+            item = new ReportVariableConfig { Name = name };
+            variables.Items.Add(item);
+        }
+
+        if (string.IsNullOrWhiteSpace(item.SourceColumnName))
+        {
+            item.SourceColumnName = sourceColumnName;
+        }
+
+        if (string.IsNullOrWhiteSpace(item.FallbackValue))
+        {
+            item.FallbackValue = fallbackValue;
+        }
+
+        if (string.IsNullOrWhiteSpace(item.StaticValue) && string.IsNullOrWhiteSpace(sourceColumnName))
+        {
+            item.StaticValue = fallbackValue;
+        }
+    }
+
+    private static PageFooterDisplayMode ResolvePageFooterDisplayMode(PageFooterConfig footer)
+        => (footer.PrintOnFirstPage, footer.PrintOnLastPage) switch
+        {
+            (true, true) => footer.DisplayMode,
+            (true, false) => PageFooterDisplayMode.FirstPageOnly,
+            (false, true) => PageFooterDisplayMode.AllExceptFirstPage,
+            _ => PageFooterDisplayMode.AllPages
+        };
+
+    private PageFooterDisplayMode ReadPageFooterDisplayMode()
+    {
+        var tag = (CmbPageFooterDisplayMode.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return Enum.TryParse<PageFooterDisplayMode>(tag, ignoreCase: true, out var mode)
+            ? mode
+            : PageFooterDisplayMode.AllPages;
+    }
+
+    private void SetPageFooterDisplayMode(PageFooterDisplayMode mode)
+    {
+        foreach (var item in CmbPageFooterDisplayMode.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), mode.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                CmbPageFooterDisplayMode.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbPageFooterDisplayMode.SelectedIndex = 0;
+    }
+
+    private static void ApplyPageFooterDisplayModeFlags(PageFooterConfig footer)
+    {
+        (footer.PrintOnFirstPage, footer.PrintOnLastPage) = footer.DisplayMode switch
+        {
+            PageFooterDisplayMode.FirstPageOnly => (true, false),
+            PageFooterDisplayMode.LastPageOnly => (false, true),
+            PageFooterDisplayMode.AllExceptFirstPage => (false, true),
+            _ => (true, true)
+        };
+    }
+
+    private static ReportBandLayoutMode ReadReportBandLayoutMode(ComboBox comboBox)
+    {
+        var tag = (comboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return Enum.TryParse<ReportBandLayoutMode>(tag, ignoreCase: true, out var mode)
+            ? mode
+            : ReportBandLayoutMode.Inline;
+    }
+
+    private int ReadReportSummaryColumnCount()
+    {
+        var tag = (CmbReportSummaryColumnCount.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return int.TryParse(tag, out var count) ? Math.Clamp(count, 1, 3) : 1;
+    }
+
+    private TablixStyleConfig BuildTablixStyle()
+        => new()
+        {
+            WidthPercent = ReadPercentOrDefault(TxtTablixWidthPercent.Text, 100.0d),
+            ShadeBaseColor = NormalizeHexColor(TxtTablixShadeBaseColor.Text, "#EDEDED"),
+            BorderColor = NormalizeHexColor(TxtTablixBorderColor.Text, "#A6A6A6"),
+            BorderWidthInPoints = ReadPositiveDouble(TxtTablixBorderWidth.Text, 0.5d),
+            FontFamily = string.IsNullOrWhiteSpace(CmbTablixFontFamily.Text) ? "Arial Narrow" : CmbTablixFontFamily.Text.Trim(),
+            FontColor = NormalizeHexColor(TxtTablixFontColor.Text, "#000000"),
+            FontSizeInPoints = ReadPositiveDouble(TxtTablixFontSize.Text, 9.0d)
+        };
+
+    private LocalizationConfig BuildLocalizationConfig()
+        => new()
+        {
+            Enabled = ChkLocalizationEnabled.IsChecked == true,
+            ReportId = ReadNonNegativeInt(TxtLocalizationReportId.Text, 0),
+            DefaultLanguageId = ReadNonNegativeInt(TxtLocalizationDefaultLanguageId.Text, 3),
+            GeneralReportId = ReadNonNegativeInt(TxtLocalizationGeneralReportId.Text, 0),
+            AccessMode = LocalizationAccessMode.Table,
+            TranslationTable = new TranslationObjectReference
+            {
+                Schema = TxtLocalizationTableSchema.Text.Trim(),
+                Name = TxtLocalizationTableName.Text.Trim()
+            },
+            ReportTable = new TranslationObjectReference
+            {
+                Schema = TxtLocalizationReportRegistrySchema.Text.Trim(),
+                Name = TxtLocalizationReportRegistryName.Text.Trim()
+            },
+            GenerateDefaultLanguageSeed = ChkLocalizationGenerateSeed.IsChecked == true,
+            SkipKeysFromGeneralReport = ChkLocalizationSkipGeneralKeys.IsChecked == true,
+            GenerateLanguageTemplatesFor = ParseIntegerList(TxtLocalizationTemplateLanguages.Text),
+            LanguageTemplateValueMode = ReadEnumComboBox(CmbLocalizationTemplateMode, LanguageTemplateValueMode.CopyDefault)
+        };
+
+    private void ApplyLocalizationConfig(LocalizationConfig config)
+    {
+        ChkLocalizationEnabled.IsChecked = config.Enabled;
+        TxtLocalizationReportId.Text = config.ReportId <= 0 ? string.Empty : config.ReportId.ToString(CultureInfo.CurrentCulture);
+        TxtLocalizationDefaultLanguageId.Text = (config.DefaultLanguageId <= 0 ? 3 : config.DefaultLanguageId).ToString(CultureInfo.CurrentCulture);
+        TxtLocalizationGeneralReportId.Text = config.GeneralReportId <= 0 ? "0" : config.GeneralReportId.ToString(CultureInfo.CurrentCulture);
+        // Show exactly what was saved. Defaults from LocalizationConfig constructor only
+        // appear for new (never-saved) configs.
+        TxtLocalizationTableSchema.Text = config.TranslationTable.Schema ?? string.Empty;
+        TxtLocalizationTableName.Text = config.TranslationTable.Name ?? string.Empty;
+        TxtLocalizationReportRegistrySchema.Text = config.ReportTable.Schema ?? string.Empty;
+        TxtLocalizationReportRegistryName.Text = config.ReportTable.Name ?? string.Empty;
+        ChkLocalizationGenerateSeed.IsChecked = config.GenerateDefaultLanguageSeed;
+        ChkLocalizationSkipGeneralKeys.IsChecked = config.SkipKeysFromGeneralReport;
+        TxtLocalizationTemplateLanguages.Text = string.Join(", ", config.GenerateLanguageTemplatesFor);
+        SetEnumComboBox(CmbLocalizationTemplateMode, config.LanguageTemplateValueMode);
+    }
+
+    private async void LocalizationRegisterReportButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await RegisterReportInDatabaseAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                "Registration failed:" + Environment.NewLine + ex.Message,
+                "Register report",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private async Task RegisterReportInDatabaseAsync()
+    {
+        var connectionString = TxtConnectionString.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            MessageBox.Show(this, "Set the connection string first.", "Register report", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var internalName = TxtReportName.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(internalName))
+        {
+            MessageBox.Show(this, "Report name (internal name) is empty.", "Register report", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var displayName = string.IsNullOrWhiteSpace(TxtReportTitle.Text)
+            ? internalName
+            : TxtReportTitle.Text.Trim();
+
+        var outputPath = TxtOutputPath.Text?.Trim() ?? string.Empty;
+        var reportFileName = string.IsNullOrWhiteSpace(outputPath)
+            ? internalName + ".rdl"
+            : Path.GetFileName(outputPath);
+
+        var registrySchema = TxtLocalizationReportRegistrySchema.Text?.Trim() ?? string.Empty;
+        var registryName = TxtLocalizationReportRegistryName.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(registrySchema) || string.IsNullOrWhiteSpace(registryName))
+        {
+            MessageBox.Show(this, "Report registry schema/name must be filled.", "Register report", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var translationSchema = TxtLocalizationTableSchema.Text?.Trim() ?? string.Empty;
+        var translationName = TxtLocalizationTableName.Text?.Trim() ?? string.Empty;
+        var defaultLanguageId = ReadNonNegativeInt(TxtLocalizationDefaultLanguageId.Text, 3);
+        var generalReportId = ReadNonNegativeInt(TxtLocalizationGeneralReportId.Text, 0);
+        var skipGeneralKeys = ChkLocalizationSkipGeneralKeys.IsChecked == true;
+        var localizationEnabled = ChkLocalizationEnabled.IsChecked == true;
+
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            var registryTarget = QuoteSqlIdentifier(registrySchema) + "." + QuoteSqlIdentifier(registryName);
+
+            // 1. MERGE the report row.
+            var mergeSql = $@"
+MERGE INTO {registryTarget} AS T
+USING (VALUES (@InternalName, @DisplayName, @ReportFileName, 1)) AS S(InternalName, DisplayName, ReportFileName, [Public])
+   ON T.InternalName = S.InternalName
+WHEN MATCHED THEN
+    UPDATE SET DisplayName = S.DisplayName,
+               ReportFileName = S.ReportFileName,
+               [Public] = S.[Public]
+WHEN NOT MATCHED THEN
+    INSERT (InternalName, DisplayName, ReportFileName, [Public])
+    VALUES (S.InternalName, S.DisplayName, S.ReportFileName, S.[Public]);
+
+SELECT ReportId FROM {registryTarget} WHERE InternalName = @InternalName;";
+
+            int reportId;
+            using (var command = new SqlCommand(mergeSql, connection))
+            {
+                command.Parameters.Add("@InternalName", SqlDbType.NVarChar, 200).Value = internalName;
+                command.Parameters.Add("@DisplayName", SqlDbType.NVarChar, 400).Value = displayName;
+                command.Parameters.Add("@ReportFileName", SqlDbType.NVarChar, 400).Value = reportFileName;
+                var scalar = await command.ExecuteScalarAsync();
+                if (scalar is null || scalar == DBNull.Value)
+                {
+                    throw new InvalidOperationException("MERGE did not return a ReportId. Check the registry table schema.");
+                }
+                reportId = Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
+            }
+
+            TxtLocalizationReportId.Text = reportId.ToString(CultureInfo.CurrentCulture);
+
+            var translationsMerged = 0;
+            if (localizationEnabled
+                && !string.IsNullOrWhiteSpace(translationSchema)
+                && !string.IsNullOrWhiteSpace(translationName)
+                && defaultLanguageId > 0)
+            {
+                var stagedModel = BuildReportModelFromCurrentState();
+                stagedModel.Localization.ReportId = reportId;
+                var labels = LocalizationLabelCollector.Collect(stagedModel);
+                if (labels.Count > 0)
+                {
+                    translationsMerged = await MergeDefaultLanguageTranslationsAsync(
+                        connection,
+                        translationSchema,
+                        translationName,
+                        reportId,
+                        defaultLanguageId,
+                        labels,
+                        skipGeneralKeys && generalReportId > 0 ? generalReportId : (int?)null);
+                }
+            }
+
+            MessageBox.Show(this,
+                $"Report registered with ReportId = {reportId}." +
+                (translationsMerged > 0 ? $"{Environment.NewLine}Default-language translations merged: {translationsMerged}." : string.Empty),
+                "Register report",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+        }
+    }
+
+    private static async Task<int> MergeDefaultLanguageTranslationsAsync(
+        SqlConnection connection,
+        string translationSchema,
+        string translationName,
+        int reportId,
+        int languageId,
+        IReadOnlyList<LocalizationLabel> labels,
+        int? skipIfExistsForGeneralReportId)
+    {
+        var target = QuoteSqlIdentifier(translationSchema) + "." + QuoteSqlIdentifier(translationName);
+
+        // When skipIfExistsForGeneralReportId is set, the source row is filtered out
+        // if a row with the same key+language already exists for the general ReportId.
+        // An empty source means MERGE does nothing for that key (no INSERT, no UPDATE).
+        var sourceClause = skipIfExistsForGeneralReportId.HasValue
+            ? $@"(
+    SELECT @ReportId AS ReportId, @LanguageId AS LanguageId, @Key AS [Key], @Value AS [Value]
+    WHERE NOT EXISTS (
+        SELECT 1 FROM {target} AS G
+        WHERE G.ReportId = @GeneralReportId
+          AND G.LanguageId = @LanguageId
+          AND G.[Key] = @Key
+          AND G.Deleted = 0
+    )
+)"
+            : "(VALUES (@ReportId, @LanguageId, @Key, @Value))";
+
+        var sql = $@"
+MERGE INTO {target} AS T
+USING {sourceClause} AS S(ReportId, LanguageId, [Key], [Value])
+   ON T.ReportId = S.ReportId
+  AND T.LanguageId = S.LanguageId
+  AND T.[Key] = S.[Key]
+  AND T.Deleted = 0
+WHEN MATCHED THEN
+    UPDATE SET [Value] = S.[Value]
+WHEN NOT MATCHED THEN
+    INSERT (ReportId, LanguageId, [Key], [Value], Deleted)
+    VALUES (S.ReportId, S.LanguageId, S.[Key], S.[Value], 0);";
+
+        var merged = 0;
+        foreach (var label in labels)
+        {
+            using var command = new SqlCommand(sql, connection);
+            command.Parameters.Add("@ReportId", SqlDbType.Int).Value = reportId;
+            command.Parameters.Add("@LanguageId", SqlDbType.Int).Value = languageId;
+            command.Parameters.Add("@Key", SqlDbType.NVarChar, 200).Value = label.Key;
+            command.Parameters.Add("@Value", SqlDbType.NVarChar, -1).Value = label.DefaultValue ?? string.Empty;
+            if (skipIfExistsForGeneralReportId.HasValue)
+            {
+                command.Parameters.Add("@GeneralReportId", SqlDbType.Int).Value = skipIfExistsForGeneralReportId.Value;
+            }
+
+            var affected = await command.ExecuteNonQueryAsync();
+            if (affected > 0)
+            {
+                merged++;
+            }
+        }
+
+        return merged;
+    }
+
+    private static string QuoteSqlIdentifier(string value)
+        => "[" + (value ?? string.Empty).Replace("]", "]]", StringComparison.Ordinal) + "]";
+
+    private void ApplyTablixStyle(TablixStyleConfig style)
+    {
+        TxtTablixWidthPercent.Text = ToUiNumber(style.WidthPercent <= 0 ? 100.0d : Math.Clamp(style.WidthPercent, 1.0d, 100.0d));
+        TxtTablixShadeBaseColor.Text = NormalizeHexColor(style.ShadeBaseColor, "#EDEDED");
+        TxtTablixBorderColor.Text = NormalizeHexColor(style.BorderColor, "#A6A6A6");
+        TxtTablixBorderWidth.Text = ToUiNumber(style.BorderWidthInPoints <= 0 ? 0.5d : style.BorderWidthInPoints);
+        SetTablixFontFamily(style.FontFamily);
+        TxtTablixFontColor.Text = NormalizeHexColor(style.FontColor, "#000000");
+        TxtTablixFontSize.Text = ToUiNumber(style.FontSizeInPoints <= 0 ? 9.0d : style.FontSizeInPoints);
+    }
+
+    private void SetTablixFontFamily(string? fontFamily)
+    {
+        var normalized = string.IsNullOrWhiteSpace(fontFamily) ? "Arial Narrow" : fontFamily;
+        foreach (var item in CmbTablixFontFamily.Items.OfType<string>())
+        {
+            if (string.Equals(item, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                CmbTablixFontFamily.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbTablixFontFamily.Text = normalized;
+    }
+
+    private List<ReportSummaryColumnConfig> BuildReportSummaryColumnsFromUi(int count)
+    {
+        var columns = new[]
+        {
+            new ReportSummaryColumnConfig
+            {
+                TextTemplate = TxtReportSummaryColumn1Template.Text.Trim(),
+                ShowTopLine = ChkReportSummaryColumn1Line.IsChecked == true,
+                WidthPercent = ReadOptionalPercent(TxtReportSummaryColumn1WidthPercent.Text),
+                VerticalAlign = ReadReportSummaryVerticalAlign(CmbReportSummaryColumn1VerticalAlign),
+                PaddingInPoints = ReadPositiveDouble(TxtReportSummaryColumn1Padding.Text, 3.0d)
+            },
+            new ReportSummaryColumnConfig
+            {
+                TextTemplate = TxtReportSummaryColumn2Template.Text.Trim(),
+                ShowTopLine = ChkReportSummaryColumn2Line.IsChecked == true,
+                WidthPercent = ReadOptionalPercent(TxtReportSummaryColumn2WidthPercent.Text),
+                VerticalAlign = ReadReportSummaryVerticalAlign(CmbReportSummaryColumn2VerticalAlign),
+                PaddingInPoints = ReadPositiveDouble(TxtReportSummaryColumn2Padding.Text, 3.0d)
+            },
+            new ReportSummaryColumnConfig
+            {
+                TextTemplate = TxtReportSummaryColumn3Template.Text.Trim(),
+                ShowTopLine = ChkReportSummaryColumn3Line.IsChecked == true,
+                WidthPercent = ReadOptionalPercent(TxtReportSummaryColumn3WidthPercent.Text),
+                VerticalAlign = ReadReportSummaryVerticalAlign(CmbReportSummaryColumn3VerticalAlign),
+                PaddingInPoints = ReadPositiveDouble(TxtReportSummaryColumn3Padding.Text, 3.0d)
+            }
+        };
+
+        return columns.Take(Math.Clamp(count, 1, 3)).ToList();
+    }
+
+    private void SetReportSummaryColumns(ReportSummaryConfig summary)
+    {
+        var count = Math.Clamp(summary.ColumnCount <= 0 ? 1 : summary.ColumnCount, 1, 3);
+        SetComboBoxByTag(CmbReportSummaryColumnCount, count.ToString(CultureInfo.InvariantCulture));
+
+        var columns = summary.Columns ?? new List<ReportSummaryColumnConfig>();
+
+        ApplyReportSummaryColumn(columns.ElementAtOrDefault(0), TxtReportSummaryColumn1Template, ChkReportSummaryColumn1Line, TxtReportSummaryColumn1WidthPercent, CmbReportSummaryColumn1VerticalAlign, TxtReportSummaryColumn1Padding);
+        ApplyReportSummaryColumn(columns.ElementAtOrDefault(1), TxtReportSummaryColumn2Template, ChkReportSummaryColumn2Line, TxtReportSummaryColumn2WidthPercent, CmbReportSummaryColumn2VerticalAlign, TxtReportSummaryColumn2Padding);
+        ApplyReportSummaryColumn(columns.ElementAtOrDefault(2), TxtReportSummaryColumn3Template, ChkReportSummaryColumn3Line, TxtReportSummaryColumn3WidthPercent, CmbReportSummaryColumn3VerticalAlign, TxtReportSummaryColumn3Padding);
+        this.activeReportSummaryTemplateBox = TxtReportSummaryColumn1Template;
+        UpdateReportSummaryColumnVisibility();
+    }
+
+    private static void ApplyReportSummaryColumn(
+        ReportSummaryColumnConfig? column,
+        TextBox templateBox,
+        CheckBox lineCheckBox,
+        TextBox widthPercentBox,
+        ComboBox verticalAlignComboBox,
+        TextBox paddingBox)
+    {
+        templateBox.Text = column?.TextTemplate ?? string.Empty;
+        lineCheckBox.IsChecked = column?.ShowTopLine == true;
+        widthPercentBox.Text = column is not null && column.WidthPercent > 0
+            ? ToUiNumber(column.WidthPercent)
+            : string.Empty;
+        SetComboBoxByTag(verticalAlignComboBox, string.IsNullOrWhiteSpace(column?.VerticalAlign) ? "Top" : column.VerticalAlign);
+        paddingBox.Text = column is not null && column.PaddingInPoints >= 0
+            ? ToUiNumber(column.PaddingInPoints)
+            : "3";
+    }
+
+    private static string ReadReportSummaryVerticalAlign(ComboBox comboBox)
+    {
+        var tag = (comboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return string.Equals(tag, "Middle", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(tag, "Bottom", StringComparison.OrdinalIgnoreCase)
+            ? tag!
+            : "Top";
+    }
+
+    private static void SetComboBoxByTag(ComboBox comboBox, string tag)
+    {
+        foreach (var item in comboBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), tag, StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        comboBox.SelectedIndex = 0;
+    }
+
+    private void ReportSummaryColumnCount_Changed(object sender, SelectionChangedEventArgs e)
+        => UpdateReportSummaryColumnVisibility();
+
+    private void UpdateReportSummaryColumnVisibility()
+    {
+        if (PanelReportSummaryColumn1 is null)
+        {
+            return;
+        }
+
+        var count = ReadReportSummaryColumnCount();
+        PanelReportSummaryColumn1.Visibility = Visibility.Visible;
+        PanelReportSummaryColumn2.Visibility = count >= 2 ? Visibility.Visible : Visibility.Collapsed;
+        PanelReportSummaryColumn3.Visibility = count >= 3 ? Visibility.Visible : Visibility.Collapsed;
+        ColReportSummaryColumn1.Width = new GridLength(1, GridUnitType.Star);
+        ColReportSummaryColumn2.Width = count >= 2
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+        ColReportSummaryColumn3.Width = count >= 3
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+    }
+
+    private static T ReadEnumComboBox<T>(ComboBox comboBox, T fallback) where T : struct, Enum
+    {
+        var tag = (comboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return Enum.TryParse<T>(tag, ignoreCase: true, out var value) ? value : fallback;
+    }
+
+    private static void SetEnumComboBox<T>(ComboBox comboBox, T value) where T : struct, Enum
+    {
+        foreach (var item in comboBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), value.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        comboBox.SelectedIndex = 0;
+    }
+
+    private void MemorandumLogoAlignment_Changed(object sender, SelectionChangedEventArgs e)
+        => UpdateMemorandumLogoAlignmentAvailability();
+
+    private void UpdateMemorandumLogoAlignmentAvailability()
+    {
+        // "Beside logo" + "Center" alignment doesn't make geometric sense — text would
+        // have no room on either side. When Center is chosen, force text below.
+        if (CmbMemorandumLogoAlignment is null || CmbMemorandumTextPlacement is null)
+        {
+            return;
+        }
+
+        var alignment = ReadEnumComboBox(CmbMemorandumLogoAlignment, MemorandumLogoAlignment.Left);
+        if (alignment == MemorandumLogoAlignment.Center)
+        {
+            SetEnumComboBox(CmbMemorandumTextPlacement, MemorandumTextPlacement.BelowLogo);
+        }
+    }
+
+    private static void SetReportBandLayoutMode(ComboBox comboBox, ReportBandLayoutMode mode)
+    {
+        foreach (var item in comboBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), mode.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                comboBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        comboBox.SelectedIndex = 0;
+    }
+
+    private static string? BuildSubreportName(string? subreportPath)
+    {
+        if (string.IsNullOrWhiteSpace(subreportPath))
+        {
+            return null;
+        }
+
+        var value = subreportPath.Trim();
+        var extension = Path.GetExtension(value);
+        return string.IsNullOrWhiteSpace(extension)
+            ? value
+            : Path.GetFileNameWithoutExtension(value);
+    }
+
+    private void ApplyReportParameters(IEnumerable<ReportParameter> parameters)
+    {
+        this.reportParameters.Clear();
+        foreach (var parameter in NormalizeParameterOrdinals(parameters))
+        {
+            parameter.BindToDatasetParameterName = NormalizeOptional(parameter.BindToDatasetParameterName ?? string.Empty)?.TrimStart('@');
+            this.reportParameters.Add(parameter);
+        }
+
+    }
+
+    private void UpdateStoredProcedureParameterChoices(IEnumerable<SpParameter> parameters)
+    {
+        var selectedValues = this.reportParameters
+            .Select(parameter => NormalizeOptional(parameter.BindToDatasetParameterName ?? string.Empty)?.TrimStart('@'))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        this.storedProcedureParameterChoices.Clear();
+        this.storedProcedureParameterChoices.Add(new Choice<string>(string.Empty, string.Empty));
+
+        foreach (var parameter in parameters
+            .Where(parameter => !parameter.IsOutput)
+            .OrderBy(parameter => parameter.OrdinalPosition <= 0 ? int.MaxValue : parameter.OrdinalPosition)
+            .ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var value = parameter.Name.TrimStart('@');
+            this.storedProcedureParameterChoices.Add(new Choice<string>(value, EnsureAtPrefixLocal(value)));
+            selectedValues.Remove(value);
+        }
+
+        foreach (var selectedValue in selectedValues.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+        {
+            this.storedProcedureParameterChoices.Add(new Choice<string>(selectedValue, EnsureAtPrefixLocal(selectedValue)));
+        }
+    }
+
+    private void AutoBindReportParametersToStoredProcedureParameters(IEnumerable<SpParameter> spParameters)
+    {
+        AutoBindReportParametersToStoredProcedureParameters(this.reportParameters, spParameters);
+        GridReportParameters.Items.Refresh();
+        UpdateStoredProcedureParameterChoices(spParameters);
+    }
+
+    private static void AutoBindReportParametersToStoredProcedureParameters(
+        IEnumerable<ReportParameter> reportParameters,
+        IEnumerable<SpParameter> spParameters)
+    {
+        var spParameterNames = spParameters
+            .Where(parameter => !parameter.IsOutput)
+            .Select(parameter => parameter.Name.TrimStart('@'))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var parameter in reportParameters)
+        {
+            if (!string.IsNullOrWhiteSpace(parameter.BindToDatasetParameterName))
+            {
+                continue;
+            }
+
+            var reportParameterName = parameter.Name.TrimStart('@');
+            if (spParameterNames.TryGetValue(reportParameterName, out var matchingSpParameterName))
+            {
+                parameter.BindToDatasetParameterName = matchingSpParameterName;
+            }
+        }
+    }
+
+    private static void ApplyDatasetParameterBindings(ReportModel model)
+    {
+        var mainDataset = model.Datasets.FirstOrDefault(dataset => dataset.Name == model.MainDatasetName)
+            ?? model.Datasets.FirstOrDefault();
+        if (mainDataset is null)
+        {
+            return;
+        }
+
+        mainDataset.ParameterBindings = model.Parameters
+            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.BindToDatasetParameterName))
+            .Select(parameter => new DatasetParameterBinding
+            {
+                DatasetParameterName = parameter.BindToDatasetParameterName!.Trim(),
+                ReportParameterName = parameter.Name.TrimStart('@')
+            })
+            .ToList();
+    }
+
+    private static void NormalizeReportParameters(IEnumerable<ReportParameter> parameters)
+    {
+        var parameterList = parameters.ToList();
+        var ordinal = 1;
+        foreach (var parameter in parameterList)
+        {
+            parameter.Name = parameter.Name.Trim().TrimStart('@');
+            parameter.Prompt = string.IsNullOrWhiteSpace(parameter.Prompt)
+                ? parameter.Name
+                : parameter.Prompt.Trim();
+            parameter.SqlTypeName = string.IsNullOrWhiteSpace(parameter.SqlTypeName)
+                ? "nvarchar"
+                : parameter.SqlTypeName.Trim();
+            parameter.DefaultValueExpression = NormalizeOptional(parameter.DefaultValueExpression ?? string.Empty);
+            parameter.DefaultValueSql = NormalizeOptional(parameter.DefaultValueSql ?? string.Empty);
+            parameter.DefaultValueDatasetName = NormalizeOptional(parameter.DefaultValueDatasetName ?? string.Empty);
+            parameter.DefaultValueField = NormalizeOptional(parameter.DefaultValueField ?? string.Empty);
+            parameter.DisplayFormat = NormalizeOptional(parameter.DisplayFormat ?? string.Empty);
+            parameter.LookupSql = NormalizeOptional(parameter.LookupSql ?? string.Empty);
+            parameter.DependsOnParameterName = NormalizeDependencyList(parameter.DependsOnParameterName, parameter.Name);
+            parameter.BindToDatasetParameterName = NormalizeOptional(parameter.BindToDatasetParameterName ?? string.Empty)?.TrimStart('@');
+            parameter.CompareToParameterName = NormalizeOptional(parameter.CompareToParameterName ?? string.Empty)?.TrimStart('@');
+            parameter.CompareOperator = NormalizeOptional(parameter.CompareOperator ?? string.Empty);
+
+            if (string.Equals(parameter.CompareToParameterName, parameter.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                parameter.CompareToParameterName = null;
+            }
+
+            if (string.IsNullOrWhiteSpace(parameter.CompareToParameterName))
+            {
+                parameter.CompareOperator = null;
+            }
+            else if (string.IsNullOrWhiteSpace(parameter.CompareOperator) || !CompareOperators.Contains(parameter.CompareOperator))
+            {
+                parameter.CompareOperator = ">=";
+            }
+
+            if (parameter.MultiValue)
+            {
+                parameter.Nullable = false;
+            }
+
+            if (parameter.OrdinalNumber <= 0)
+            {
+                parameter.OrdinalNumber = ordinal;
+            }
+
+            ordinal++;
+        }
+
+        RemoveForwardParameterReferences(parameterList);
+    }
+
+    private static void RemoveForwardParameterReferences(IReadOnlyList<ReportParameter> parameters)
+    {
+        var ordinalsByName = parameters
+            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
+            .GroupBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Min(parameter => parameter.OrdinalNumber), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var parameter in parameters)
+        {
+            var currentOrdinal = parameter.OrdinalNumber;
+            var validDependencies = ParseDependencyNames(parameter.DependsOnParameterName)
+                .Where(name => ordinalsByName.TryGetValue(name, out var ordinal) && ordinal < currentOrdinal)
+                .ToList();
+            parameter.DependsOnParameterName = validDependencies.Count == 0 ? null : string.Join(", ", validDependencies);
+
+            if (!string.IsNullOrWhiteSpace(parameter.CompareToParameterName)
+                && (!ordinalsByName.TryGetValue(parameter.CompareToParameterName, out var compareOrdinal)
+                    || compareOrdinal >= currentOrdinal))
+            {
+                parameter.CompareToParameterName = null;
+                parameter.CompareOperator = null;
+            }
+        }
+    }
+
+    private void CommitPendingGridEdits()
+    {
+        GridReportParameters.CommitEdit(DataGridEditingUnit.Cell, true);
+        GridReportParameters.CommitEdit(DataGridEditingUnit.Row, true);
+        GridFields.CommitEdit(DataGridEditingUnit.Cell, true);
+        GridFields.CommitEdit(DataGridEditingUnit.Row, true);
+        GridReportVariables.CommitEdit(DataGridEditingUnit.Cell, true);
+        GridReportVariables.CommitEdit(DataGridEditingUnit.Row, true);
+        NormalizeFieldDrafts();
+    }
+
+    private List<ReportVariableConfig> BuildReportVariablesFromGrid()
+        => this.reportVariables
+            .Where(variable => !string.IsNullOrWhiteSpace(variable.Name))
+            .Select(variable => new ReportVariableConfig
+            {
+                Enabled = variable.Enabled,
+                Name = variable.Name.Trim(),
+                SourceColumnName = NormalizeOptional(variable.SourceColumnName ?? string.Empty),
+                StaticValue = NormalizeOptional(variable.StaticValue ?? string.Empty),
+                FallbackValue = NormalizeOptional(variable.FallbackValue ?? string.Empty)
+            })
+            .ToList();
+
+    private void ApplyReportVariables(IEnumerable<ReportVariableConfig> variables)
+    {
+        this.reportVariables.Clear();
+        foreach (var variable in variables.Where(variable => !string.IsNullOrWhiteSpace(variable.Name)))
+        {
+            this.reportVariables.Add(new ReportVariableConfig
+            {
+                Enabled = variable.Enabled,
+                Name = variable.Name,
+                SourceColumnName = variable.SourceColumnName,
+                StaticValue = variable.StaticValue,
+                FallbackValue = variable.FallbackValue
+            });
+        }
+
+        if (this.reportVariables.Count == 0)
+        {
+            this.reportVariables.Add(new ReportVariableConfig
+            {
+                Name = "CompanyName",
+                SourceColumnName = "CompanyName",
+                FallbackValue = TxtCompanyName.Text.Trim()
+            });
+        }
+    }
+
+
+    private void NormalizeFieldDrafts()
+    {
+        foreach (var field in this.fieldDrafts)
+        {
+            field.GroupLevel = field.GroupLevel is >= 1 and <= 4 ? field.GroupLevel : 0;
+            if (field.GroupLevel > 0)
+            {
+                field.AggregateFunction = null;
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(field.AggregateFunction)
+                && !DatasetFieldDraft.GetAllowedAggregates(field.SqlTypeName).Contains(field.AggregateFunction, StringComparer.OrdinalIgnoreCase))
+            {
+                field.AggregateFunction = null;
+            }
+        }
+
+        GridFields.Items.Refresh();
+    }
+
+    private List<ReportParameter> BuildReportParametersFromGrid()
+    {
+        SortReportParametersByOrdinal();
+
+        return this.reportParameters
+            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
+            .OrderBy(parameter => parameter.OrdinalNumber <= 0 ? int.MaxValue : parameter.OrdinalNumber)
+            .ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void SortReportParametersByOrdinal()
+    {
+        var sortedParameters = this.reportParameters
+            .OrderBy(parameter => parameter.OrdinalNumber <= 0 ? int.MaxValue : parameter.OrdinalNumber)
+            .ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (sortedParameters.SequenceEqual(this.reportParameters))
+        {
+            return;
+        }
+
+        this.reportParameters.Clear();
+        foreach (var parameter in sortedParameters)
+        {
+            this.reportParameters.Add(parameter);
+        }
+
+    }
+
+    private static IEnumerable<ReportParameter> NormalizeParameterOrdinals(IEnumerable<ReportParameter> parameters)
+    {
+        var ordinal = 1;
+        foreach (var parameter in parameters)
+        {
+            if (parameter.OrdinalNumber <= 0)
+            {
+                parameter.OrdinalNumber = ordinal;
+            }
+
+            ordinal++;
+            yield return parameter;
+        }
+    }
+
+    private static void ApplyAuxiliaryParameterDatasets(ReportModel model)
+    {
+        var generatedDatasetNames = new HashSet<string>(
+            model.Datasets.Select(dataset => dataset.Name),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var parameter in model.Parameters.Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name)))
+        {
+            if (!string.IsNullOrWhiteSpace(parameter.LookupSql))
+            {
+                parameter.Lookup ??= new LookupConfig
+                {
+                    DatasetName = BuildLookupDatasetName(parameter.Name)
+                };
+
+                parameter.Lookup.ValueField = "Value";
+                parameter.Lookup.LabelField = "Label";
+                parameter.Lookup.DatasetName = EnsureUniqueDatasetName(parameter.Lookup.DatasetName, generatedDatasetNames);
+                model.Datasets.Add(new DatasetConfig
+                {
+                    Name = parameter.Lookup.DatasetName,
+                    Command = parameter.LookupSql.Trim(),
+                    CommandKind = CommandKind.Text,
+                    Fields =
+                    [
+                        new DatasetField(parameter.Lookup.ValueField, parameter.SqlTypeName, false, 1),
+                        new DatasetField(parameter.Lookup.LabelField, "nvarchar", true, 2)
+                    ],
+                    ParameterBindings = BuildLookupParameterBindings(parameter)
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(parameter.DefaultValueSql))
+            {
+                var defaultDatasetName = EnsureUniqueDatasetName(BuildDefaultDatasetName(parameter.Name), generatedDatasetNames);
+                parameter.DefaultValueDatasetName = defaultDatasetName;
+                parameter.DefaultValueField = "Value";
+                model.Datasets.Add(new DatasetConfig
+                {
+                    Name = defaultDatasetName,
+                    Command = parameter.DefaultValueSql.Trim(),
+                    CommandKind = CommandKind.Text,
+                    Fields =
+                    [
+                        new DatasetField("Value", parameter.SqlTypeName, true, 1)
+                    ]
+                });
+            }
+        }
+    }
+
+    private static List<DatasetParameterBinding> BuildLookupParameterBindings(ReportParameter parameter)
+    {
+        if (string.IsNullOrWhiteSpace(parameter.DependsOnParameterName))
+        {
+            return [];
+        }
+
+        return ParseDependencyNames(parameter.DependsOnParameterName)
+            .Select(dependencyName => new DatasetParameterBinding
+            {
+                DatasetParameterName = "@" + dependencyName,
+                ReportParameterName = dependencyName
+            })
+            .ToList();
+    }
+
+    private static string? NormalizeDependencyList(string? dependencyList, string parameterName)
+    {
+        var currentName = parameterName.Trim().TrimStart('@');
+        var dependencies = ParseDependencyNames(dependencyList)
+            .Where(name => !string.Equals(name, currentName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return dependencies.Count == 0 ? null : string.Join(", ", dependencies);
+    }
+
+    private static List<string> ParseDependencyNames(string? dependencyList)
+        => string.IsNullOrWhiteSpace(dependencyList)
+            ? []
+            : dependencyList
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(name => name.Trim().TrimStart('@'))
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+
+    private static string? GetPrimaryDependencyName(string? dependencyList)
+        => ParseDependencyNames(dependencyList).FirstOrDefault();
+
+    private List<string> GetEarlierParameterNames(ReportParameter parameter)
+    {
+        var currentOrdinal = GetEffectiveOrdinal(parameter);
+        var currentName = parameter.Name.Trim().TrimStart('@');
+        return this.reportParameters
+            .Where(candidate => !ReferenceEquals(candidate, parameter)
+                && GetEffectiveOrdinal(candidate) < currentOrdinal)
+            .Select(candidate => candidate.Name.Trim().TrimStart('@'))
+            .Where(name => !string.IsNullOrWhiteSpace(name)
+                && !string.Equals(name, currentName, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+    }
+
+    private int GetEffectiveOrdinal(ReportParameter parameter)
+    {
+        if (parameter.OrdinalNumber > 0)
+        {
+            return parameter.OrdinalNumber;
+        }
+
+        var index = this.reportParameters.IndexOf(parameter);
+        return index < 0 ? int.MaxValue : index + 1;
+    }
+
+    private bool IsMultiValueReportParameter(string? parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(parameterName))
+        {
+            return false;
+        }
+
+        var normalizedName = parameterName.Trim().TrimStart('@');
+        return this.reportParameters.FirstOrDefault(parameter =>
+            string.Equals(parameter.Name.TrimStart('@'), normalizedName, StringComparison.OrdinalIgnoreCase))?.MultiValue == true;
+    }
+
+    private static string EnsureUniqueDatasetName(string datasetName, HashSet<string> usedNames)
+    {
+        var baseName = string.IsNullOrWhiteSpace(datasetName) ? "dsLookup" : datasetName.Trim();
+        var candidate = baseName;
+        var index = 2;
+        while (!usedNames.Add(candidate))
+        {
+            candidate = baseName + index.ToString(CultureInfo.InvariantCulture);
+            index++;
+        }
+
+        return candidate;
+    }
+
+    private static string BuildDefaultDatasetName(string parameterName)
+    {
+        var normalized = parameterName.TrimStart('@');
+        return "ds" + (string.IsNullOrWhiteSpace(normalized)
+            ? "Default"
+            : char.ToUpperInvariant(normalized[0]) + normalized[1..]) + "Default";
     }
 
     private void SetOutputMode(OutputMode outputMode)
@@ -421,29 +2716,49 @@ public partial class ReportSetupDialog : Window
         CmbOutputMode.SelectedIndex = 0;
     }
 
+    private void SetReportPurpose(ReportPurpose purpose)
+    {
+        foreach (var item in CmbReportPurpose.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), purpose.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                CmbReportPurpose.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbReportPurpose.SelectedIndex = 0;
+    }
+
     private PageSetupConfig BuildPageSetup()
     {
+        var pageSize = ReadPageSize();
         var orientation = ReadPageOrientation();
+        var (width, height) = GetPageDimensions(pageSize);
+
+        if (orientation == PageOrientation.Landscape)
+        {
+            (width, height) = (height, width);
+        }
+
         var pageSetup = new PageSetupConfig
         {
+            PageSizeName = pageSize,
             Orientation = orientation,
+            WidthInCentimeters = width,
+            HeightInCentimeters = height,
             LeftMarginInCentimeters = ReadPositiveDouble(TxtMarginLeft.Text, 1.0d),
             RightMarginInCentimeters = ReadPositiveDouble(TxtMarginRight.Text, 1.0d),
             TopMarginInCentimeters = ReadPositiveDouble(TxtMarginTop.Text, 1.0d),
             BottomMarginInCentimeters = ReadPositiveDouble(TxtMarginBottom.Text, 1.0d)
         };
 
-        if (orientation == PageOrientation.Landscape)
-        {
-            pageSetup.WidthInCentimeters = 29.7d;
-            pageSetup.HeightInCentimeters = 21.0d;
-        }
-
         return pageSetup;
     }
 
     private void ApplyPageSetup(PageSetupConfig pageSetup)
     {
+        SetPageSize(pageSetup.PageSizeName);
         SetPageOrientation(pageSetup.Orientation);
         TxtMarginLeft.Text = ToUiNumber(pageSetup.LeftMarginInCentimeters);
         TxtMarginRight.Text = ToUiNumber(pageSetup.RightMarginInCentimeters);
@@ -473,6 +2788,60 @@ public partial class ReportSetupDialog : Window
         CmbPageOrientation.SelectedIndex = 0;
     }
 
+    private string ReadPageSize()
+        => (CmbPageSize.SelectedItem as ComboBoxItem)?.Tag?.ToString()
+            ?? CmbPageSize.Text.Trim()
+            ?? "A4";
+
+    private void SetPageSize(string? pageSizeName)
+    {
+        foreach (var item in CmbPageSize.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag?.ToString(), pageSizeName, StringComparison.OrdinalIgnoreCase))
+            {
+                CmbPageSize.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbPageSize.Text = string.IsNullOrWhiteSpace(pageSizeName) ? "A4" : pageSizeName;
+    }
+
+    private static (double Width, double Height) GetPageDimensions(string pageSizeName)
+    {
+        return pageSizeName.Trim().ToUpperInvariant() switch
+        {
+            "A3" => (29.7d, 42.0d),
+            "LETTER" => (21.59d, 27.94d),
+            "LEGAL" => (21.59d, 35.56d),
+            _ => (21.0d, 29.7d)
+        };
+    }
+
+    private string ReadBaseFontFamily()
+    {
+        var selected = CmbBaseFont.SelectedItem?.ToString();
+        var typed = CmbBaseFont.Text.Trim();
+        return string.IsNullOrWhiteSpace(typed)
+            ? (string.IsNullOrWhiteSpace(selected) ? "Arial" : selected)
+            : typed;
+    }
+
+    private void SetBaseFontFamily(string? fontFamily)
+    {
+        var normalized = string.IsNullOrWhiteSpace(fontFamily) ? "Arial" : fontFamily;
+        foreach (var item in CmbBaseFont.Items.OfType<string>())
+        {
+            if (string.Equals(item, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                CmbBaseFont.SelectedItem = item;
+                return;
+            }
+        }
+
+        CmbBaseFont.Text = normalized;
+    }
+
     private string ReadStoredProcedureName()
         => (CmbStoredProcedure.SelectedItem as StoredProcedureSummary)?.DisplayName
             ?? CmbStoredProcedure.Text.Trim();
@@ -491,8 +2860,76 @@ public partial class ReportSetupDialog : Window
         return name + ".sp2rdl.json";
     }
 
+    private string BuildDefaultReportFileName(string extension)
+    {
+        var name = string.IsNullOrWhiteSpace(TxtReportName.Text)
+            ? ReadStoredProcedureName()
+            : TxtReportName.Text.Trim();
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = "Report";
+        }
+
+        name = ReadReportPurpose() switch
+        {
+            ReportPurpose.MemorandumSubreport when !name.StartsWith("Memorandum_", StringComparison.OrdinalIgnoreCase)
+                => "Memorandum_" + name,
+            ReportPurpose.ReportSummarySubreport when !name.StartsWith("ReportSummary_", StringComparison.OrdinalIgnoreCase)
+                => "ReportSummary_" + name,
+            _ => name
+        };
+
+        foreach (var invalid in Path.GetInvalidFileNameChars())
+        {
+            name = name.Replace(invalid, '_');
+        }
+
+        return name + extension;
+    }
+
     private static string? NormalizeOptional(string value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string FormatStaticValidValues(IEnumerable<StaticValidValue> values)
+        => string.Join(
+            Environment.NewLine,
+            values
+                .Where(value => !string.IsNullOrWhiteSpace(value.Value))
+                .Select(value => $"{value.Value.Trim()} | {(string.IsNullOrWhiteSpace(value.Label) ? value.Value.Trim() : value.Label.Trim())}"));
+
+    private static List<StaticValidValue> ParseStaticValidValues(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return [];
+        }
+
+        var values = new List<StaticValidValue>();
+        foreach (var rawLine in text.Split(["\r\n", "\n"], StringSplitOptions.None))
+        {
+            var line = rawLine.Trim();
+            if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var parts = line.Split('|', 2, StringSplitOptions.TrimEntries);
+            var value = parts[0].Trim();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            values.Add(new StaticValidValue
+            {
+                Value = value,
+                Label = parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]) ? parts[1].Trim() : value
+            });
+        }
+
+        return values;
+    }
 
     private static double ReadPositiveDouble(string value, double fallback)
     {
@@ -500,6 +2937,53 @@ public partial class ReportSetupDialog : Window
         return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) && result >= 0
             ? result
             : fallback;
+    }
+
+    private static double ReadOptionalPercent(string value)
+    {
+        var normalized = value.Replace(',', '.');
+        return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) && result > 0
+            ? Math.Clamp(result, 1.0d, 100.0d)
+            : 0.0d;
+    }
+
+    private static double ReadPercentOrDefault(string value, double fallback)
+    {
+        var normalized = value.Replace(',', '.');
+        return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) && result > 0
+            ? Math.Clamp(result, 1.0d, 100.0d)
+            : fallback;
+    }
+
+    private static int ReadNonNegativeInt(string value, int fallback)
+        => int.TryParse(value, NumberStyles.Integer, CultureInfo.CurrentCulture, out var result) && result >= 0
+            ? result
+            : fallback;
+
+    private static List<int> ParseIntegerList(string value)
+        => string.IsNullOrWhiteSpace(value)
+            ? []
+            : value
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(item => int.TryParse(item, NumberStyles.Integer, CultureInfo.CurrentCulture, out var result) ? result : 0)
+                .Where(result => result > 0)
+                .Distinct()
+                .ToList();
+
+    private static string NormalizeHexColor(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        var trimmed = value.Trim();
+        if (!trimmed.StartsWith("#", StringComparison.Ordinal))
+        {
+            trimmed = "#" + trimmed;
+        }
+
+        return Regex.IsMatch(trimmed, "^#[0-9A-Fa-f]{6}$") ? trimmed.ToUpperInvariant() : fallback;
     }
 
     private static string ToUiNumber(double value)
@@ -535,6 +3019,19 @@ public partial class ReportSetupDialog : Window
     {
         var parts = storedProcedureName.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return parts.Length == 2 ? parts[1] : storedProcedureName;
+    }
+
+    private void TxtTablixShadeBaseColor_TextChanged(object sender, TextChangedEventArgs e)
+    {
+
+    }
+
+    private static string BuildLookupDatasetName(string parameterName)
+    {
+        var normalized = parameterName.TrimStart('@');
+        return "ds" + (string.IsNullOrWhiteSpace(normalized)
+            ? "Lookup"
+            : char.ToUpperInvariant(normalized[0]) + normalized[1..]);
     }
 }
 #pragma warning restore CS0618
