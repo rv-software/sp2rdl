@@ -14,7 +14,7 @@ internal sealed class ReportOutputWriter
         this.rdlBuilder = rdlBuilder;
     }
 
-    public void Write(string reportPath, ReportModel model)
+    public ReportOutputResult Write(string reportPath, ReportModel model)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reportPath);
         ArgumentNullException.ThrowIfNull(model);
@@ -28,7 +28,10 @@ internal sealed class ReportOutputWriter
             : rdlDocument;
 
         SaveXml(normalizedReportPath, outputDocument);
-        SpRdlJsonStore.Save(GetModelPath(normalizedReportPath), model);
+        var modelPath = GetModelPath(normalizedReportPath);
+        SpRdlJsonStore.Save(modelPath, model);
+        var seedPath = SaveLocalizationSeedSql(normalizedReportPath, model);
+        return new ReportOutputResult(normalizedReportPath, modelPath, seedPath);
     }
 
     public static string GetModelPath(string reportPath)
@@ -48,5 +51,22 @@ internal sealed class ReportOutputWriter
     {
         using var stream = File.Create(reportPath);
         document.Save(stream);
+    }
+
+    public static string GetLocalizationSeedPath(string reportPath)
+        => Path.ChangeExtension(reportPath, ".translations.sql");
+
+    private static string? SaveLocalizationSeedSql(string reportPath, ReportModel model)
+    {
+        var labels = LocalizationLabelCollector.Collect(model);
+        var sql = LocalizationSeedSqlBuilder.Build(model, labels);
+        if (string.IsNullOrWhiteSpace(sql))
+        {
+            return null;
+        }
+
+        var seedPath = GetLocalizationSeedPath(reportPath);
+        File.WriteAllText(seedPath, sql);
+        return seedPath;
     }
 }

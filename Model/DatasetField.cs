@@ -9,4 +9,5 @@ internal sealed record DatasetField(
     int GroupLevel = 0,
     string? AggregateFunction = null,
     bool IncludeInReport = true,
-    string? TextAlign = null);
+    string? TextAlign = null,
+    string? DefaultLabel = null);

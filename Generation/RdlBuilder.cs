@@ -145,6 +145,12 @@ internal sealed class RdlBuilder
             datasets.Add(reportVariablesDataset);
         }
 
+        var localizationDataset = BuildLocalizationLabelsDataset(model);
+        if (localizationDataset is not null)
+        {
+            datasets.Add(localizationDataset);
+        }
+
         if (datasets.Count == 0)
         {
             return null;
@@ -191,6 +197,72 @@ internal sealed class RdlBuilder
             CommandKind = CommandKind.Text,
             Fields = fields
         };
+    }
+
+    private static DatasetConfig? BuildLocalizationLabelsDataset(ReportModel model)
+    {
+        var labels = LocalizationLabelCollector.Collect(model);
+        if (labels.Count == 0)
+        {
+            return null;
+        }
+
+        return new DatasetConfig
+        {
+            Name = "dsReportLabels",
+            Command = BuildLocalizationLabelsSql(model.Localization, labels),
+            CommandKind = CommandKind.Text,
+            Fields = labels
+                .Select((label, index) => new DatasetField(label.FieldName, "nvarchar", true, index + 1))
+                .ToList(),
+            ParameterBindings =
+            [
+                new DatasetParameterBinding { DatasetParameterName = "@ReportId", ReportParameterName = "ReportId" },
+                new DatasetParameterBinding { DatasetParameterName = "@LanguageId", ReportParameterName = "LanguageId" }
+            ]
+        };
+    }
+
+    private static string BuildLocalizationLabelsSql(LocalizationConfig localization, IReadOnlyList<LocalizationLabel> labels)
+    {
+        var selectList = string.Join(
+            "," + Environment.NewLine,
+            labels.Select(label =>
+                $"    COALESCE(MAX(CASE WHEN X.[Key] = '{EscapeSql(label.Key)}' THEN X.[Value] END), N'{EscapeSql(label.DefaultValue)}') AS {QuoteName(label.FieldName)}"));
+
+        return $"""
+            WITH T AS
+            (
+                SELECT RT.[Key], RT.[Value], 1 AS Priority
+                FROM {QuoteName(localization.TranslationTable.Schema)}.{QuoteName(localization.TranslationTable.Name)} AS RT
+                WHERE RT.ReportId = @ReportId
+                  AND RT.LanguageId = @LanguageId
+                  AND RT.Deleted = 0
+
+                UNION ALL
+
+                SELECT RT.[Key], RT.[Value], 2 AS Priority
+                FROM {QuoteName(localization.TranslationTable.Schema)}.{QuoteName(localization.TranslationTable.Name)} AS RT
+                WHERE RT.ReportId = {localization.GeneralReportId}
+                  AND RT.LanguageId = @LanguageId
+                  AND RT.Deleted = 0
+            )
+            SELECT
+            {selectList}
+            FROM
+            (
+                SELECT [Key], [Value]
+                FROM
+                (
+                    SELECT
+                        T.[Key],
+                        T.[Value],
+                        ROW_NUMBER() OVER (PARTITION BY T.[Key] ORDER BY T.Priority) AS RowNo
+                    FROM T
+                ) AS R
+                WHERE R.RowNo = 1
+            ) AS X;
+            """;
     }
 
     private static XElement? BuildEmbeddedImages(ReportModel model)
@@ -252,7 +324,8 @@ internal sealed class RdlBuilder
 
     private static XElement? BuildReportParameters(ReportModel model)
     {
-        if (model.Parameters.Count == 0)
+        var parameters = BuildEffectiveReportParameters(model);
+        if (parameters.Count == 0)
         {
             return null;
         }
@@ -261,9 +334,14 @@ internal sealed class RdlBuilder
             .SelectMany(dataset => dataset.ParameterBindings)
             .Select(binding => binding.ReportParameterName.TrimStart('@'))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (model.Localization.Enabled)
+        {
+            parametersUsedInQueries.Add("ReportId");
+            parametersUsedInQueries.Add("LanguageId");
+        }
 
         return new XElement(Rdl + "ReportParameters",
-            model.Parameters
+            parameters
                 .OrderBy(parameter => parameter.OrdinalNumber <= 0 ? int.MaxValue : parameter.OrdinalNumber)
                 .ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(parameter => BuildReportParameter(
@@ -356,12 +434,15 @@ internal sealed class RdlBuilder
 
     private static XElement? BuildReportParametersLayout(ReportModel model)
     {
-        if (model.Parameters.Count == 0)
+        var parameters = BuildEffectiveReportParameters(model)
+            //.Where(parameter => !parameter.Hidden)
+            .ToList();
+        if (parameters.Count == 0)
         {
             return null;
         }
 
-        var orderedParameters = model.Parameters
+        var orderedParameters = parameters
             .OrderBy(parameter => parameter.OrdinalNumber <= 0 ? int.MaxValue : parameter.OrdinalNumber)
             .ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -381,6 +462,42 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "NumberOfColumns", columns.ToString(CultureInfo.InvariantCulture)),
                 new XElement(Rdl + "NumberOfRows", rows.ToString(CultureInfo.InvariantCulture)),
                 cellDefinitions));
+    }
+
+    private static List<ReportParameter> BuildEffectiveReportParameters(ReportModel model)
+    {
+        var parameters = model.Parameters.ToList();
+        if (!model.Localization.Enabled)
+        {
+            return parameters;
+        }
+
+        if (!parameters.Any(parameter => string.Equals(parameter.Name.TrimStart('@'), "ReportId", StringComparison.OrdinalIgnoreCase)))
+        {
+            parameters.Add(new ReportParameter
+            {
+                Name = "ReportId",
+                SqlTypeName = "int",
+                Prompt = "ReportId",
+                Hidden = true,
+                DefaultValueExpression = model.Localization.ReportId.ToString(CultureInfo.InvariantCulture),
+                OrdinalNumber = -2
+            });
+        }
+
+        if (!parameters.Any(parameter => string.Equals(parameter.Name.TrimStart('@'), "LanguageId", StringComparison.OrdinalIgnoreCase)))
+        {
+            parameters.Add(new ReportParameter
+            {
+                Name = "LanguageId",
+                SqlTypeName = "int",
+                Prompt = "Language",
+                DefaultValueExpression = Math.Max(1, model.Localization.DefaultLanguageId).ToString(CultureInfo.InvariantCulture),
+                OrdinalNumber = -1
+            });
+        }
+
+        return parameters;
     }
 
     private static void ValidateParameterDependencies(ReportModel model)
@@ -468,6 +585,7 @@ internal sealed class RdlBuilder
         body.Element(Rdl + "ReportItems")?.Remove();
         var reportItems = new XElement(Rdl + "ReportItems");
         var currentTop = 0.0d;
+        var localizationLabels = LocalizationLabelCollector.Collect(model);
 
         if (model.Purpose == ReportPurpose.MemorandumSubreport)
         {
@@ -500,7 +618,7 @@ internal sealed class RdlBuilder
         {
             reportItems.Add(BuildPositionedTextbox(
                 "sp2rdlReportTitle",
-                model.ReportTitle.Text,
+                GetLocalizationExpression(localizationLabels, "ReportTitle") ?? model.ReportTitle.Text,
                 "0cm",
                 ToCentimeters(currentTop),
                 ToCentimeters(usableWidth),
@@ -544,7 +662,7 @@ internal sealed class RdlBuilder
             return;
         }
 
-        reportItems.Add(BuildTablix(dataset, usableWidth, currentTop, model.TablixStyle ?? new TablixStyleConfig()));
+        reportItems.Add(BuildTablix(dataset, usableWidth, currentTop, model.TablixStyle ?? new TablixStyleConfig(), localizationLabels));
         currentTop += EstimateTablixHeight(dataset);
 
         var reportSummary = BuildReportSummaryBand(model, usableWidth, currentTop);
@@ -1188,7 +1306,12 @@ internal sealed class RdlBuilder
         return Math.Max(1.25d, rowCount * 0.6d);
     }
 
-    private static XElement BuildTablix(DatasetConfig dataset, double usableWidth, double top, TablixStyleConfig tablixStyle)
+    private static XElement BuildTablix(
+        DatasetConfig dataset,
+        double usableWidth,
+        double top,
+        TablixStyleConfig tablixStyle,
+        IReadOnlyList<LocalizationLabel> localizationLabels)
     {
         var fields = dataset.Fields
             .OrderBy(field => field.OrdinalPosition <= 0 ? int.MaxValue : field.OrdinalPosition)
@@ -1227,13 +1350,13 @@ internal sealed class RdlBuilder
         var columnWidths = CalculateTablixColumnWidths(detailFields, tablixWidth);
         var tablixRows = new List<XElement>
         {
-            BuildTablixRow(detailFields, "Header", "0.65cm", field => field.Name, true, tablixStyle)
+            BuildTablixRow(detailFields, "Header", "0.65cm", field => GetLocalizationExpression(localizationLabels, "Column." + field.Name) ?? field.Name, true, tablixStyle)
         };
 
         foreach (var group in groups)
         {
             tablixRows.Add(BuildSpacerRow(detailFields, $"Group{group.Level}HeaderSpacer"));
-            tablixRows.Add(BuildGroupHeaderRow(detailFields, group, tablixStyle));
+            tablixRows.Add(BuildGroupHeaderRow(detailFields, group, tablixStyle, localizationLabels));
         }
 
         tablixRows.Add(BuildTablixRow(detailFields, "Detail", "0.6cm", field => $"=Fields!{field.Name}.Value", false, tablixStyle));
@@ -1241,12 +1364,12 @@ internal sealed class RdlBuilder
         foreach (var group in groups.AsEnumerable().Reverse())
         {
             var style = GetGroupVisualStyle(group.Level, tablixStyle);
-            tablixRows.Add(BuildAggregateRow(detailFields, aggregateFields, $"sp2rdlGroup{group.Level}", BuildGroupSubtotalLabel(group), style.BackgroundColor, style.FontStyle, tablixStyle));
+            tablixRows.Add(BuildAggregateRow(detailFields, aggregateFields, $"sp2rdlGroup{group.Level}", BuildGroupSubtotalLabel(group, localizationLabels), style.BackgroundColor, style.FontStyle, tablixStyle));
         }
 
         if (aggregateFields.Count > 0)
         {
-            tablixRows.Add(BuildAggregateRow(detailFields, aggregateFields, null, "Ukupno", GetGrandTotalBackgroundColor(tablixStyle), fontStyle: null, tablixStyle));
+            tablixRows.Add(BuildAggregateRow(detailFields, aggregateFields, null, GetLocalizationExpression(localizationLabels, "GrandTotal") ?? "Ukupno", GetGrandTotalBackgroundColor(tablixStyle), fontStyle: null, tablixStyle));
         }
 
         return new XElement(Rdl + "Tablix",
@@ -1286,13 +1409,17 @@ internal sealed class RdlBuilder
                     .ToList()))
             .ToList();
 
-    private static XElement BuildGroupHeaderRow(IReadOnlyList<DatasetField> columns, TablixGroup group, TablixStyleConfig tablixStyle)
+    private static XElement BuildGroupHeaderRow(
+        IReadOnlyList<DatasetField> columns,
+        TablixGroup group,
+        TablixStyleConfig tablixStyle,
+        IReadOnlyList<LocalizationLabel> localizationLabels)
     {
         var style = GetGroupVisualStyle(group.Level, tablixStyle);
         var cellContents = new XElement(Rdl + "CellContents",
             BuildCellTextbox(
                 $"sp2rdlGroup{group.Level}Header1",
-                BuildGroupHeaderExpression(group),
+                BuildGroupHeaderExpression(group, localizationLabels),
                 isHeader: true,
                 format: null,
                 textAlign: "Left",
@@ -1323,12 +1450,17 @@ internal sealed class RdlBuilder
             new XElement(Rdl + "TablixCells", cells));
     }
 
-    private static string BuildGroupHeaderExpression(TablixGroup group)
+    private static string BuildGroupHeaderExpression(TablixGroup group, IReadOnlyList<LocalizationLabel> localizationLabels)
         => "=" + string.Join(" & \"   \" & ", group.Fields.Select(field =>
-            QuoteExpressionText(field.Name + ": ") + " & CStr(Fields!" + field.Name + ".Value)"));
+            (GetLocalizationExpressionBody(localizationLabels, "Group." + field.Name) ?? QuoteExpressionText(field.Name))
+            + " & \": \" & CStr(Fields!" + field.Name + ".Value)"));
 
-    private static string BuildGroupSubtotalLabel(TablixGroup group)
-        => "Podzbir: " + string.Join(", ", group.Fields.Select(field => field.Name));
+    private static string BuildGroupSubtotalLabel(TablixGroup group, IReadOnlyList<LocalizationLabel> localizationLabels)
+    {
+        var subtotal = GetLocalizationExpressionBody(localizationLabels, "Subtotal") ?? QuoteExpressionText("Podzbir");
+        var fieldLabels = group.Fields.Select(field => GetLocalizationExpressionBody(localizationLabels, "Group." + field.Name) ?? QuoteExpressionText(field.Name));
+        return "=" + subtotal + " & \": \" & " + string.Join(" & \", \" & ", fieldLabels);
+    }
 
     private static XElement BuildAggregateRow(
         IReadOnlyList<DatasetField> columns,
@@ -2582,6 +2714,26 @@ internal sealed class RdlBuilder
 
     private static string EscapeExpressionText(string value)
         => value.Replace("\"", "\"\"", StringComparison.Ordinal);
+
+    private static string? GetLocalizationExpression(IReadOnlyList<LocalizationLabel> labels, string key)
+    {
+        var expressionBody = GetLocalizationExpressionBody(labels, key);
+        return expressionBody is null ? null : "=" + expressionBody;
+    }
+
+    private static string? GetLocalizationExpressionBody(IReadOnlyList<LocalizationLabel> labels, string key)
+    {
+        var label = labels.FirstOrDefault(item => string.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase));
+        return label is null
+            ? null
+            : $"First(Fields!{label.FieldName}.Value, {QuoteExpressionText("dsReportLabels")})";
+    }
+
+    private static string QuoteName(string value)
+        => "[" + (string.IsNullOrWhiteSpace(value) ? "dbo" : value.Trim()).Replace("]", "]]", StringComparison.Ordinal) + "]";
+
+    private static string EscapeSql(string value)
+        => value.Replace("'", "''", StringComparison.Ordinal);
 
     private static List<string> ParseDependencyNames(string? dependencyList)
         => string.IsNullOrWhiteSpace(dependencyList)

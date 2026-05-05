@@ -36,6 +36,8 @@ internal sealed class ReportModel
 
     public ReportVariablesConfig ReportVariables { get; set; } = new();
 
+    public LocalizationConfig Localization { get; set; } = new();
+
     public MemorandumConfig Memorandum { get; set; } = new();
 
     public ReportSummaryConfig ReportSummary { get; set; } = new();

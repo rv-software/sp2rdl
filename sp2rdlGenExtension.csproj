@@ -39,4 +39,8 @@
     <Message Importance="High" Text="Replacing SQL Client runtime assemblies in VSIX." />
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\Build\PatchVsixSqlClient.ps1&quot; -VsixPath &quot;$(TargetVsixContainer)&quot; -RuntimeAssemblyPath &quot;$(OutputPath)runtimes\win\lib\net8.0\System.Data.SqlClient.dll&quot; -SniAssemblyPath &quot;$(OutputPath)runtimes\win-x64\native\sni.dll&quot;" Condition="Exists('$(TargetVsixContainer)') And Exists('$(OutputPath)runtimes\win\lib\net8.0\System.Data.SqlClient.dll') And Exists('$(OutputPath)runtimes\win-x64\native\sni.dll')" />
   </Target>
+
+  <Target Name="CopyInstallGuideNextToVsix" AfterTargets="CreateVsixContainer">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\docs\INSTALLATION.md" DestinationFiles="$(OutputPath)install.md" Condition="Exists('$(MSBuildProjectDirectory)\docs\INSTALLATION.md')" />
+  </Target>
 </Project>

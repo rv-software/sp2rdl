@@ -209,7 +209,107 @@ Generator pokusava procitati lokalni subreport RDL i proslijediti sve parametre 
 
 Kod objave na Reporting Services treba obratiti paznju na server path subreporta. Lokalna putanja je korisna za dizajn, ali server mora znati gdje je subreport objavljen.
 
-## JSON state
+## Lokalizacija
+
+Generator moze ubaciti hidden parametre `ReportId` i `LanguageId`, dodati skriveni `dsReportLabels` dataset, i sve staticke labele u RDL-u (naslov, header/footer tekstovi, nazivi kolona, group header-i, „Ukupno", „Podzbir"...) preusmjeriti na ekspresije koje citaju vrijednosti iz konfigurisane tabele prevoda.
+
+Konfiguracija je na tabu **Localization** dijaloga.
+
+### Sta generator očekuje od baze
+
+Tool je generican. Imena schema/tabela ne nudi kao default — popunis ih sam kako se zovu u tvojoj bazi. Bitne su **kolone i njihovi tipovi**.
+
+#### Tabela za registar reporta („Report table")
+
+Koristi je dugme **Register report**. Generator radi `MERGE` po `InternalName` i nakon toga procita `ReportId`.
+
+Minimalna struktura:
+
+| Kolona | Tip | Napomena |
+|---|---|---|
+| `ReportId` | `int IDENTITY` | primarni kljuc, generise ga baza |
+| `InternalName` | `nvarchar(...)` | mora biti UNIQUE; koristi se kao match key |
+| `DisplayName` | `nvarchar(...)` | čita se iz „Report Title" sa tab-a Report |
+| `ReportFileName` | `nvarchar(...)` | naziv .rdl fajla (npr. `MyReport.rdl`) |
+| `Public` | `bit` | dugme uvijek upisuje `1` |
+
+Primjer DDL-a (prilagodi schema/imena svojoj bazi):
+
+```sql
+CREATE TABLE BasicCatalogs.Report
+(
+    ReportId        int IDENTITY(1,1) NOT NULL CONSTRAINT PK_Report PRIMARY KEY,
+    InternalName    nvarchar(200)     NOT NULL CONSTRAINT UQ_Report_InternalName UNIQUE,
+    DisplayName     nvarchar(400)     NOT NULL,
+    ReportFileName  nvarchar(400)     NOT NULL,
+    [Public]        bit               NOT NULL CONSTRAINT DF_Report_Public DEFAULT (1)
+);
+```
+
+Tabela moze imati i druge kolone — generator dira samo ove gore.
+
+#### Tabela prevoda („Translation table")
+
+Koristi je: (1) seed SQL fajl, (2) dugme **Register report** za default jezik, (3) runtime `dsReportLabels` u generisanom RDL-u.
+
+Minimalna struktura:
+
+| Kolona | Tip | Napomena |
+|---|---|---|
+| `ReportId` | `int` | FK na Report; `0` (ili `GeneralReportId`) za zajednicke prevode |
+| `LanguageId` | `int` | id jezika |
+| `Key` | `nvarchar(...)` | logicki kljuc labele (npr. `Column.UkupnoDana`) |
+| `Value` | `nvarchar(...)` | tekst prevoda |
+| `Deleted` | `bit` | runtime filter; svuda se trazi `Deleted = 0` |
+
+Primjer:
+
+```sql
+CREATE TABLE BasicCatalogs.ReportTranslation
+(
+    ReportTranslationId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_ReportTranslation PRIMARY KEY,
+    ReportId            int           NOT NULL,
+    LanguageId          int           NOT NULL,
+    [Key]               nvarchar(200) NOT NULL,
+    [Value]             nvarchar(max) NOT NULL,
+    Deleted             bit           NOT NULL CONSTRAINT DF_ReportTranslation_Deleted DEFAULT (0),
+    CONSTRAINT UQ_ReportTranslation UNIQUE (ReportId, LanguageId, [Key])
+);
+```
+
+Generator runtime SQL prvo trazi prevod za konkretni `ReportId`, pa fallback na `GeneralReportId` (ako je postavljen), pa fallback na default tekst hardkodovan u ekspresiji.
+
+#### Tabela jezika
+
+Generator je **ne dira** direktno, ali je obicno potrebna ako parametar `LanguageId` ima dropdown listu. Ti je definises sam u svojoj bazi.
+
+### Dugme „Register report"
+
+Posto su konekcija i tabele postavljene:
+
+1. Kliknes **Register report** na tab-u Localization.
+2. Generator otvori SqlConnection, izvrsi:
+   ```sql
+   MERGE INTO {ReportTable} AS T
+   USING (VALUES (@InternalName, @DisplayName, @ReportFileName, 1)) AS S(...)
+      ON T.InternalName = S.InternalName
+   WHEN MATCHED THEN UPDATE SET DisplayName = S.DisplayName, ReportFileName = S.ReportFileName, [Public] = S.[Public]
+   WHEN NOT MATCHED THEN INSERT (...) VALUES (...);
+   SELECT ReportId FROM {ReportTable} WHERE InternalName = @InternalName;
+   ```
+   `InternalName` je vrijednost polja **Report name** (nije ReportTitle), `DisplayName` je **Report title**, `ReportFileName` je naziv .rdl fajla iz **Output path**.
+3. Vraceni `ReportId` se upise u polje **ReportId** na formi.
+4. Ako je **Enable generated label localization** ukljuceno, generator zatim radi `MERGE` u tabelu prevoda za svaki staticki label u default jeziku.
+
+### „Skip keys already translated under General ReportId"
+
+Cekiraj kada imas centralni („opsti") report sa zajednickim prevodima i ne zelis duplikate u svakom konkretnom report-u. Ako pod `GeneralReportId` postoji prevod za isti `Key/LanguageId`, generator ga preskoci za trenutni `ReportId`. To se odrazava i u Register report dugmetu i u generisanom seed SQL fajlu.
+
+### Seed SQL fajl
+
+Ako je **Generate seed SQL next to report** ukljuceno, generator pored .rdl fajla snimi `*.localization.sql` sa `MERGE` blokovima za default jezik i sve dodatne template jezike. Pregledaj prevode prije nego sto ga pustis u produkciju.
+
+
 
 State fajl ima ekstenziju `.sp2rdl.json` i sadrzi kompletan `ReportModel`:
 

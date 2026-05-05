@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -1333,10 +1334,10 @@ public partial class ReportSetupDialog : Window
         try
         {
             Cursor = System.Windows.Input.Cursors.Wait;
-            this.outputWriter.Write(outputPath, reportModel);
+            var result = this.outputWriter.Write(outputPath, reportModel);
             MessageBox.Show(
                 this,
-                $"Report generated:\n\n{outputPath}",
+                BuildGenerateSuccessMessage(reportModel, result),
                 "sp2rdlGenExtension",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -1354,6 +1355,33 @@ public partial class ReportSetupDialog : Window
         {
             Cursor = null;
         }
+    }
+
+    private static string BuildGenerateSuccessMessage(ReportModel model, ReportOutputResult result)
+    {
+        var message = new StringBuilder()
+            .AppendLine("Report generated:")
+            .AppendLine()
+            .AppendLine(result.ReportPath)
+            .AppendLine()
+            .AppendLine("State JSON:")
+            .AppendLine(result.ModelPath);
+
+        if (result.LocalizationSeedPath is not null)
+        {
+            message
+                .AppendLine()
+                .AppendLine("Localization seed SQL:")
+                .AppendLine(result.LocalizationSeedPath);
+        }
+        else if (model.Localization.Enabled)
+        {
+            message
+                .AppendLine()
+                .AppendLine("Localization seed SQL was not generated. Check that 'Generate seed SQL next to report' is enabled and that the report has labels.");
+        }
+
+        return message.ToString();
     }
 
     private bool ValidateOutputPathBeforeGenerate()
@@ -1478,6 +1506,7 @@ public partial class ReportSetupDialog : Window
         reportModel.ReportVariables.DynamicSource.Enabled = !string.IsNullOrWhiteSpace(TxtReportVariablesSql.Text);
         reportModel.ReportVariables.DynamicSource.SqlExpression = TxtReportVariablesSql.Text.Trim();
         reportModel.ReportVariables.Items = BuildReportVariablesFromGrid();
+        reportModel.Localization = BuildLocalizationConfig();
         reportModel.TablixStyle = BuildTablixStyle();
         UpsertReportVariable(reportModel.ReportVariables, "CompanyName", "CompanyName", reportModel.CompanyInfo.Text);
         reportModel.Memorandum.Enabled = ChkMemorandumEnabled.IsChecked == true;
@@ -1585,6 +1614,7 @@ public partial class ReportSetupDialog : Window
         TxtCompanyEndpoint.Text = model.CompanyInfo.BackendEndpoint ?? string.Empty;
         TxtReportVariablesSql.Text = model.ReportVariables.DynamicSource.SqlExpression;
         ApplyReportVariables(model.ReportVariables.Items);
+        ApplyLocalizationConfig(model.Localization ?? new LocalizationConfig());
         ApplyTablixStyle(model.TablixStyle ?? new TablixStyleConfig());
         ChkMemorandumEnabled.IsChecked = model.Memorandum.Enabled;
         SetReportBandLayoutMode(CmbMemorandumLayoutMode, model.Memorandum.LayoutMode);
@@ -1792,6 +1822,244 @@ public partial class ReportSetupDialog : Window
             FontColor = NormalizeHexColor(TxtTablixFontColor.Text, "#000000"),
             FontSizeInPoints = ReadPositiveDouble(TxtTablixFontSize.Text, 9.0d)
         };
+
+    private LocalizationConfig BuildLocalizationConfig()
+        => new()
+        {
+            Enabled = ChkLocalizationEnabled.IsChecked == true,
+            ReportId = ReadNonNegativeInt(TxtLocalizationReportId.Text, 0),
+            DefaultLanguageId = ReadNonNegativeInt(TxtLocalizationDefaultLanguageId.Text, 3),
+            GeneralReportId = ReadNonNegativeInt(TxtLocalizationGeneralReportId.Text, 0),
+            AccessMode = LocalizationAccessMode.Table,
+            TranslationTable = new TranslationObjectReference
+            {
+                Schema = TxtLocalizationTableSchema.Text.Trim(),
+                Name = TxtLocalizationTableName.Text.Trim()
+            },
+            ReportTable = new TranslationObjectReference
+            {
+                Schema = TxtLocalizationReportRegistrySchema.Text.Trim(),
+                Name = TxtLocalizationReportRegistryName.Text.Trim()
+            },
+            GenerateDefaultLanguageSeed = ChkLocalizationGenerateSeed.IsChecked == true,
+            SkipKeysFromGeneralReport = ChkLocalizationSkipGeneralKeys.IsChecked == true,
+            GenerateLanguageTemplatesFor = ParseIntegerList(TxtLocalizationTemplateLanguages.Text),
+            LanguageTemplateValueMode = ReadEnumComboBox(CmbLocalizationTemplateMode, LanguageTemplateValueMode.CopyDefault)
+        };
+
+    private void ApplyLocalizationConfig(LocalizationConfig config)
+    {
+        ChkLocalizationEnabled.IsChecked = config.Enabled;
+        TxtLocalizationReportId.Text = config.ReportId <= 0 ? string.Empty : config.ReportId.ToString(CultureInfo.CurrentCulture);
+        TxtLocalizationDefaultLanguageId.Text = (config.DefaultLanguageId <= 0 ? 3 : config.DefaultLanguageId).ToString(CultureInfo.CurrentCulture);
+        TxtLocalizationGeneralReportId.Text = config.GeneralReportId <= 0 ? "0" : config.GeneralReportId.ToString(CultureInfo.CurrentCulture);
+        // Show exactly what was saved. Defaults from LocalizationConfig constructor only
+        // appear for new (never-saved) configs.
+        TxtLocalizationTableSchema.Text = config.TranslationTable.Schema ?? string.Empty;
+        TxtLocalizationTableName.Text = config.TranslationTable.Name ?? string.Empty;
+        TxtLocalizationReportRegistrySchema.Text = config.ReportTable.Schema ?? string.Empty;
+        TxtLocalizationReportRegistryName.Text = config.ReportTable.Name ?? string.Empty;
+        ChkLocalizationGenerateSeed.IsChecked = config.GenerateDefaultLanguageSeed;
+        ChkLocalizationSkipGeneralKeys.IsChecked = config.SkipKeysFromGeneralReport;
+        TxtLocalizationTemplateLanguages.Text = string.Join(", ", config.GenerateLanguageTemplatesFor);
+        SetEnumComboBox(CmbLocalizationTemplateMode, config.LanguageTemplateValueMode);
+    }
+
+    private async void LocalizationRegisterReportButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await RegisterReportInDatabaseAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                "Registration failed:" + Environment.NewLine + ex.Message,
+                "Register report",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private async Task RegisterReportInDatabaseAsync()
+    {
+        var connectionString = TxtConnectionString.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            MessageBox.Show(this, "Set the connection string first.", "Register report", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var internalName = TxtReportName.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(internalName))
+        {
+            MessageBox.Show(this, "Report name (internal name) is empty.", "Register report", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var displayName = string.IsNullOrWhiteSpace(TxtReportTitle.Text)
+            ? internalName
+            : TxtReportTitle.Text.Trim();
+
+        var outputPath = TxtOutputPath.Text?.Trim() ?? string.Empty;
+        var reportFileName = string.IsNullOrWhiteSpace(outputPath)
+            ? internalName + ".rdl"
+            : Path.GetFileName(outputPath);
+
+        var registrySchema = TxtLocalizationReportRegistrySchema.Text?.Trim() ?? string.Empty;
+        var registryName = TxtLocalizationReportRegistryName.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(registrySchema) || string.IsNullOrWhiteSpace(registryName))
+        {
+            MessageBox.Show(this, "Report registry schema/name must be filled.", "Register report", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var translationSchema = TxtLocalizationTableSchema.Text?.Trim() ?? string.Empty;
+        var translationName = TxtLocalizationTableName.Text?.Trim() ?? string.Empty;
+        var defaultLanguageId = ReadNonNegativeInt(TxtLocalizationDefaultLanguageId.Text, 3);
+        var generalReportId = ReadNonNegativeInt(TxtLocalizationGeneralReportId.Text, 0);
+        var skipGeneralKeys = ChkLocalizationSkipGeneralKeys.IsChecked == true;
+        var localizationEnabled = ChkLocalizationEnabled.IsChecked == true;
+
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            var registryTarget = QuoteSqlIdentifier(registrySchema) + "." + QuoteSqlIdentifier(registryName);
+
+            // 1. MERGE the report row.
+            var mergeSql = $@"
+MERGE INTO {registryTarget} AS T
+USING (VALUES (@InternalName, @DisplayName, @ReportFileName, 1)) AS S(InternalName, DisplayName, ReportFileName, [Public])
+   ON T.InternalName = S.InternalName
+WHEN MATCHED THEN
+    UPDATE SET DisplayName = S.DisplayName,
+               ReportFileName = S.ReportFileName,
+               [Public] = S.[Public]
+WHEN NOT MATCHED THEN
+    INSERT (InternalName, DisplayName, ReportFileName, [Public])
+    VALUES (S.InternalName, S.DisplayName, S.ReportFileName, S.[Public]);
+
+SELECT ReportId FROM {registryTarget} WHERE InternalName = @InternalName;";
+
+            int reportId;
+            using (var command = new SqlCommand(mergeSql, connection))
+            {
+                command.Parameters.Add("@InternalName", SqlDbType.NVarChar, 200).Value = internalName;
+                command.Parameters.Add("@DisplayName", SqlDbType.NVarChar, 400).Value = displayName;
+                command.Parameters.Add("@ReportFileName", SqlDbType.NVarChar, 400).Value = reportFileName;
+                var scalar = await command.ExecuteScalarAsync();
+                if (scalar is null || scalar == DBNull.Value)
+                {
+                    throw new InvalidOperationException("MERGE did not return a ReportId. Check the registry table schema.");
+                }
+                reportId = Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
+            }
+
+            TxtLocalizationReportId.Text = reportId.ToString(CultureInfo.CurrentCulture);
+
+            var translationsMerged = 0;
+            if (localizationEnabled
+                && !string.IsNullOrWhiteSpace(translationSchema)
+                && !string.IsNullOrWhiteSpace(translationName)
+                && defaultLanguageId > 0)
+            {
+                var stagedModel = BuildReportModelFromCurrentState();
+                stagedModel.Localization.ReportId = reportId;
+                var labels = LocalizationLabelCollector.Collect(stagedModel);
+                if (labels.Count > 0)
+                {
+                    translationsMerged = await MergeDefaultLanguageTranslationsAsync(
+                        connection,
+                        translationSchema,
+                        translationName,
+                        reportId,
+                        defaultLanguageId,
+                        labels,
+                        skipGeneralKeys && generalReportId > 0 ? generalReportId : (int?)null);
+                }
+            }
+
+            MessageBox.Show(this,
+                $"Report registered with ReportId = {reportId}." +
+                (translationsMerged > 0 ? $"{Environment.NewLine}Default-language translations merged: {translationsMerged}." : string.Empty),
+                "Register report",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+        }
+    }
+
+    private static async Task<int> MergeDefaultLanguageTranslationsAsync(
+        SqlConnection connection,
+        string translationSchema,
+        string translationName,
+        int reportId,
+        int languageId,
+        IReadOnlyList<LocalizationLabel> labels,
+        int? skipIfExistsForGeneralReportId)
+    {
+        var target = QuoteSqlIdentifier(translationSchema) + "." + QuoteSqlIdentifier(translationName);
+
+        // When skipIfExistsForGeneralReportId is set, the source row is filtered out
+        // if a row with the same key+language already exists for the general ReportId.
+        // An empty source means MERGE does nothing for that key (no INSERT, no UPDATE).
+        var sourceClause = skipIfExistsForGeneralReportId.HasValue
+            ? $@"(
+    SELECT @ReportId AS ReportId, @LanguageId AS LanguageId, @Key AS [Key], @Value AS [Value]
+    WHERE NOT EXISTS (
+        SELECT 1 FROM {target} AS G
+        WHERE G.ReportId = @GeneralReportId
+          AND G.LanguageId = @LanguageId
+          AND G.[Key] = @Key
+          AND G.Deleted = 0
+    )
+)"
+            : "(VALUES (@ReportId, @LanguageId, @Key, @Value))";
+
+        var sql = $@"
+MERGE INTO {target} AS T
+USING {sourceClause} AS S(ReportId, LanguageId, [Key], [Value])
+   ON T.ReportId = S.ReportId
+  AND T.LanguageId = S.LanguageId
+  AND T.[Key] = S.[Key]
+  AND T.Deleted = 0
+WHEN MATCHED THEN
+    UPDATE SET [Value] = S.[Value]
+WHEN NOT MATCHED THEN
+    INSERT (ReportId, LanguageId, [Key], [Value], Deleted)
+    VALUES (S.ReportId, S.LanguageId, S.[Key], S.[Value], 0);";
+
+        var merged = 0;
+        foreach (var label in labels)
+        {
+            using var command = new SqlCommand(sql, connection);
+            command.Parameters.Add("@ReportId", SqlDbType.Int).Value = reportId;
+            command.Parameters.Add("@LanguageId", SqlDbType.Int).Value = languageId;
+            command.Parameters.Add("@Key", SqlDbType.NVarChar, 200).Value = label.Key;
+            command.Parameters.Add("@Value", SqlDbType.NVarChar, -1).Value = label.DefaultValue ?? string.Empty;
+            if (skipIfExistsForGeneralReportId.HasValue)
+            {
+                command.Parameters.Add("@GeneralReportId", SqlDbType.Int).Value = skipIfExistsForGeneralReportId.Value;
+            }
+
+            var affected = await command.ExecuteNonQueryAsync();
+            if (affected > 0)
+            {
+                merged++;
+            }
+        }
+
+        return merged;
+    }
+
+    private static string QuoteSqlIdentifier(string value)
+        => "[" + (value ?? string.Empty).Replace("]", "]]", StringComparison.Ordinal) + "]";
 
     private void ApplyTablixStyle(TablixStyleConfig style)
     {
@@ -2687,6 +2955,21 @@ public partial class ReportSetupDialog : Window
             : fallback;
     }
 
+    private static int ReadNonNegativeInt(string value, int fallback)
+        => int.TryParse(value, NumberStyles.Integer, CultureInfo.CurrentCulture, out var result) && result >= 0
+            ? result
+            : fallback;
+
+    private static List<int> ParseIntegerList(string value)
+        => string.IsNullOrWhiteSpace(value)
+            ? []
+            : value
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(item => int.TryParse(item, NumberStyles.Integer, CultureInfo.CurrentCulture, out var result) ? result : 0)
+                .Where(result => result > 0)
+                .Distinct()
+                .ToList();
+
     private static string NormalizeHexColor(string? value, string fallback)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -2736,6 +3019,11 @@ public partial class ReportSetupDialog : Window
     {
         var parts = storedProcedureName.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return parts.Length == 2 ? parts[1] : storedProcedureName;
+    }
+
+    private void TxtTablixShadeBaseColor_TextChanged(object sender, TextChangedEventArgs e)
+    {
+
     }
 
     private static string BuildLookupDatasetName(string parameterName)

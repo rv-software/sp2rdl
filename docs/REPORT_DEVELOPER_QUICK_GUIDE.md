@@ -237,6 +237,67 @@ Strana {PageNo} od {PageCount}
 
 Generator prevodi `{PageNo}` i `{PageCount}` u RDL globals.
 
+## Lokalizacija (visejezicne labele)
+
+Ako tvoj report mora biti dostupan na vise jezika, koristi tab **Localization**.
+
+### Sta ti treba u bazi
+
+Generator je generican: ti unosis **schema** i **naziv** dvije tabele koje vec postoje (ili ih kreiras po nizem template-u). Tool ne pretpostavlja imena.
+
+**1. Tabela registra reporta** (npr. `BasicCatalogs.Report`):
+
+```sql
+CREATE TABLE BasicCatalogs.Report
+(
+    ReportId       int IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    InternalName   nvarchar(200)  NOT NULL UNIQUE,
+    DisplayName    nvarchar(400)  NOT NULL,
+    ReportFileName nvarchar(400)  NOT NULL,
+    [Public]       bit            NOT NULL DEFAULT (1)
+);
+```
+
+**2. Tabela prevoda** (npr. `BasicCatalogs.ReportTranslation`):
+
+```sql
+CREATE TABLE BasicCatalogs.ReportTranslation
+(
+    ReportTranslationId int IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    ReportId   int           NOT NULL,
+    LanguageId int           NOT NULL,
+    [Key]      nvarchar(200) NOT NULL,
+    [Value]    nvarchar(max) NOT NULL,
+    Deleted    bit           NOT NULL DEFAULT (0),
+    CONSTRAINT UQ_ReportTranslation UNIQUE (ReportId, LanguageId, [Key])
+);
+```
+
+Tabele mogu imati i druge kolone (Audit, CreatedBy, itd.) — generator dira samo navedene.
+
+### Tipican workflow
+
+1. Cekiraj **Enable generated label localization**.
+2. Unesi **Default LanguageId** (jezik koji se koristi kad nema prevoda).
+3. Po potrebi **General ReportId** (zajednicki report za prevode kao sto su „Ukupno", „Strana", „od").
+4. Popuni **Translation table schema/name** i **Report table schema/name** prema tvojoj bazi.
+5. Klikni **Register report**:
+   - generator radi MERGE u Report tabeli po `InternalName` (= **Report name** sa tab-a Report),
+   - vrati `ReportId` u polje na formi,
+   - ako je localization ukljuceno, automatski prebaci default-language prevode kroz MERGE u ReportTranslation.
+6. Cekiraj **Generate seed SQL** ako zelis i `.localization.sql` fajl pored .rdl-a (sa MERGE blokovima koje mozes pregledati prije produkcije).
+7. **Skip keys already translated under General ReportId** — kad zelis da prevodi koji vec postoje pod opstim report-om ne dupliraju za konkretni report.
+
+### Sta se desi u generisanom RDL-u
+
+- Dodaju se hidden parametri `ReportId` (= dobijeni id), `LanguageId` (= default).
+- Dodaje se skriveni `dsReportLabels` koji povlaci sve labele jednim SELECT-om.
+- Sve staticke labele (naslov, kolone, „Ukupno", header/footer tekst, itd.) se zamijene ekspresijom koja prvo trazi prevod za `ReportId`, pa fallback na `GeneralReportId`, pa fallback na hardkodovan default.
+
+### Prepravka prevoda nakon generisanja
+
+Idi direktno u tabelu prevoda (UPDATE [Value]). Nije potrebno regenerisati RDL.
+
 ## Save state
 
 Klikni `Save state...` cesto, posebno prije vece izmjene.

@@ -218,6 +218,33 @@ Generise page header i page footer. Placeholderi kao `{PageNo}` i `{PageCount}` 
 
 Sprjecava forward dependency u parametrima. Parametar smije zavisiti samo od ranijih parametara po ordinalu.
 
+## Localization
+
+Lokalizacija staticnih labela u generisanom RDL-u je rijesena preko:
+
+- `Model/LocalizationConfig.cs` — UI/state model. Polja `TranslationTable`, `ReportTable`, `DefaultLanguageId`, `GeneralReportId`, `SkipKeysFromGeneralReport`, `GenerateDefaultLanguageSeed`, `GenerateLanguageTemplatesFor`, `LanguageTemplateValueMode`. Defaulti za schema/name su prazni — alat je generican i imena tabela ne pretpostavlja.
+- `Generation/LocalizationLabelCollector.cs` — sakuplja labele iz modela: `ReportTitle`, `GrandTotal`, `Subtotal`, `Column.{name}`, `Group.{name}`.
+- `Generation/LocalizationSeedSqlBuilder.cs` — emituje seed SQL kao `MERGE` blokove. Kada je `SkipKeysFromGeneralReport` ukljuceno i `GeneralReportId > 0`, source u MERGE-u dobije `WHERE NOT EXISTS` filter da se preskoce vec postojeci kljucevi pod opstim report-om.
+- `Generation/RdlBuilder.cs` (`BuildLocalizationLabelsSql`, `ApplyLocalization*`) — dodaje hidden parametre `ReportId`/`LanguageId`, `dsReportLabels` dataset i `Placeholder` ekspresije koje koriste prevode sa fallback-om na `GeneralReportId` pa na hardkodovan default.
+
+### Dugme „Register report"
+
+Handler `LocalizationRegisterReportButton_Click` u `ReportSetupDialog.xaml.cs` (`RegisterReportInDatabaseAsync`):
+
+1. Otvara `SqlConnection` na trenutnu konekciju.
+2. Radi `MERGE` na `Report` tabeli (par `InternalName` = TxtReportName, `DisplayName` = TxtReportTitle, `ReportFileName` = `Path.GetFileName(OutputPath)`).
+3. Cita `ReportId` kroz `SELECT` nakon MERGE-a i upise u `TxtLocalizationReportId`.
+4. Ako je localization ukljuceno, poziva `MergeDefaultLanguageTranslationsAsync` koji za svaki sakupljeni `LocalizationLabel` izvrsi MERGE u tabelu prevoda. Ako je `skipIfExistsForGeneralReportId` postavljen, source koristi `WHERE NOT EXISTS` filter prema `GeneralReportId`.
+
+### Minimalne strukture tabela
+
+Tool ne kreira tabele sam. Korisnik mora obezbijediti:
+
+- **Report tabelu**: `ReportId int IDENTITY` PK, `InternalName nvarchar` UNIQUE, `DisplayName nvarchar`, `ReportFileName nvarchar`, `[Public] bit`.
+- **Translation tabelu**: `ReportId int`, `LanguageId int`, `[Key] nvarchar`, `[Value] nvarchar(max)`, `Deleted bit` (filter `Deleted = 0`). Preporucen UNIQUE constraint nad `(ReportId, LanguageId, [Key])` da MERGE bude deterministican.
+
+Vidi README sekciju „Lokalizacija" za primjer DDL-a.
+
 ## Persistence
 
 ### `SpRdlJsonStore.Save`
