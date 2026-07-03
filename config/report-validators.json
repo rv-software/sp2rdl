@@ -1,0 +1,135 @@
+{
+  "kinds": [
+    {
+      "code": "validation",
+      "name": "Validation",
+      "description": "A rule that validates entered parameter value."
+    },
+    {
+      "code": "behavior",
+      "name": "Behavior",
+      "description": "A runtime input behavior that changes how a value is prepared or handled."
+    },
+    {
+      "code": "metadata",
+      "name": "Metadata",
+      "description": "Runtime metadata consumed by the application, not a validation rule."
+    }
+  ],
+  "validators": [
+    {
+      "code": "trim",
+      "name": "Trim whitespace",
+      "valueType": "enum",
+      "kind": "behavior",
+      "allowedValues": [ "none", "left", "right", "all" ],
+      "defaultValue": "all",
+      "description": "Controls whether leading/trailing whitespace is removed before validation."
+    },
+    {
+      "code": "minLength",
+      "name": "Minimum length",
+      "valueType": "int",
+      "kind": "validation",
+      "description": "Minimum number of characters."
+    },
+    {
+      "code": "maxLength",
+      "name": "Maximum length",
+      "valueType": "int",
+      "kind": "validation",
+      "description": "Maximum number of characters."
+    },
+    {
+      "code": "pattern",
+      "name": "Regex pattern",
+      "valueType": "regex",
+      "kind": "validation",
+      "description": "Regular expression that the value must match."
+    },
+    {
+      "code": "startsWith",
+      "name": "Starts with",
+      "valueType": "string",
+      "kind": "validation",
+      "description": "Required value prefix."
+    },
+    {
+      "code": "endsWith",
+      "name": "Ends with",
+      "valueType": "string",
+      "kind": "validation",
+      "description": "Required value suffix."
+    },
+    {
+      "code": "email",
+      "name": "Email",
+      "valueType": "bool",
+      "kind": "validation",
+      "defaultValue": "true",
+      "description": "Checks whether the value is a valid email address."
+    },
+    {
+      "code": "minValue",
+      "name": "Minimum value",
+      "valueType": "decimal",
+      "kind": "validation",
+      "description": "Minimum numeric value."
+    },
+    {
+      "code": "maxValue",
+      "name": "Maximum value",
+      "valueType": "decimal",
+      "kind": "validation",
+      "description": "Maximum numeric value."
+
+    },
+    {
+      "code": "minDate",
+      "name": "Minimum date",
+      "valueType": "dateExpression",
+      "kind": "validation",
+      "allowedValues": [ "yyyy-MM-dd", "today", "startOfWeek", "endOfWeek", "startOfMonth", "endOfMonth", "startOfQuarter", "endOfQuarter", "startOfYear", "endOfYear", "+/-Nd", "+/-Nw", "+/-Nm", "+/-Nq", "+/-Ny" ],
+      "description": "Minimum accepted date. Accepts yyyy-MM-dd or expressions like today, today-7d, startOfMonth, endOfYear+1d."
+    },
+    {
+      "code": "maxDate",
+      "name": "Maximum date",
+      "valueType": "dateExpression",
+      "kind": "validation",
+      "allowedValues": [ "yyyy-MM-dd", "today", "startOfWeek", "endOfWeek", "startOfMonth", "endOfMonth", "startOfQuarter", "endOfQuarter", "startOfYear", "endOfYear", "+/-Nd", "+/-Nw", "+/-Nm", "+/-Nq", "+/-Ny" ],
+      "description": "Maximum accepted date. Accepts yyyy-MM-dd or expressions like today, today+30d, endOfMonth, startOfYear-1y."
+    },
+    {
+      "code": "minSelected",
+      "name": "Minimum selected",
+      "valueType": "int",
+      "kind": "validation",
+      "description": "Minimum number of selected values."
+    },
+    {
+      "code": "maxSelected",
+      "name": "Maximum selected",
+      "valueType": "int",
+      "kind": "validation",
+      "description": "Maximum number of selected values."
+    },
+    {
+      "code": "defaultValue",
+      "name": "Default value",
+      "valueType": "string",
+      "kind": "metadata",
+      "description": "Runtime default value or expression interpreted by the consuming application."
+    }
+  ],
+  "componentValidators": {
+    "Text": [ "defaultValue", "trim", "minLength", "maxLength", "pattern", "startsWith", "endsWith", "email" ],
+    "Integer": [ "defaultValue", "minValue", "maxValue" ],
+    "Decimal": [ "defaultValue", "minValue", "maxValue" ],
+    "Date": [ "defaultValue", "minDate", "maxDate" ],
+    "DateTime": [ "defaultValue", "minDate", "maxDate" ],
+    "Boolean": [],
+    "Dropdown": [ "defaultValue" ],
+    "MultiSelect": [ "defaultValue", "minSelected", "maxSelected" ]
+  }
+}

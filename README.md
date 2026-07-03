@@ -1,21 +1,23 @@
 # SP to RDL Generator
 
-Visual Studio ekstenzija za generisanje `.rdl` ili `.rdlc` izvjestaja iz SQL Server stored procedure ili iz sacuvanog JSON state fajla.
+Visual Studio ekstenzija za generisanje `.rdl` ili `.rdlc` izvjestaja iz SQL Server stored procedure, T-SQL teksta ili iz sacuvanog JSON state fajla.
 
 Generator je napravljen kao praktican alat za band-oriented nacin razmisljanja: generalne postavke izvjestaja, report parametri, body/tablix, memorandum, page header/footer i report summary se podesavaju kroz dijalog, a rezultat se upisuje kao RDL/RDLC i prateci `.sp2rdl.json`.
 
 ## Osnovni tok rada
 
 1. Pokreni komandu `SP to RDL Generator` iz Visual Studio `Extensions` menija.
-2. Na tabu `General` izaberi konekciju, stored proceduru, output mode, naslov izvjestaja, format stranice, orijentaciju i margine.
-3. Klikni `Inspect` za ucitavanje parametara procedure i osnovnih kolona.
-4. Ako SQL Server ne moze automatski opisati rezultat procedure, koristi `Suggest columns` ili rucno dodaj kolone na `Main dataset`.
-5. Na `Report params` uredi parametre koje korisnik vidi u izvjestaju.
-6. Na `Report variables` definisi interne placeholder varijable za memorandum, footer i summary.
-7. Na `Body / Tablix` podesi stil glavne tabele, grupe, podzbirove i ukupno.
-8. Na `Memorandum`, `Page header / Footer` i `Report Summary` podesi zaglavlja, potpise, logo i tekstualne sablone.
-9. Na `Output` izaberi putanju fajla.
-10. Klikni `Generate`.
+2. Na tabu `General` podesi output mode, naslov izvjestaja, format stranice, orijentaciju i margine.
+3. Na tabu `Main dataset` izaberi konekciju i source: `Stored procedure` ili `SQL text`.
+4. Za stored proceduru izaberi proceduru iz liste; za SQL text klikni `Edit SQL...` i unesi glavni T-SQL.
+5. Klikni `Inspect` za ucitavanje SQL parametara i osnovnih kolona.
+6. Ako SQL Server ne moze automatski opisati rezultat, koristi `Suggest columns` ili rucno dodaj kolone na `Main dataset`.
+7. Na `Report params` uredi parametre koje korisnik vidi u izvjestaju.
+8. Na `Report variables` definisi interne placeholder varijable za memorandum, footer i summary.
+9. Na `Body / Tablix` podesi stil glavne tabele, grupe, podzbirove i ukupno.
+10. Na `Memorandum`, `Page header / Footer` i `Report Summary` podesi zaglavlja, potpise, logo i tekstualne sablone.
+11. Na `Output` izaberi putanju fajla.
+12. Klikni `Generate`.
 
 Svako generisanje snima i JSON state pored izvjestaja. State se moze rucno sacuvati i ucitati kroz dugmad `Save state...` i `Load state...`.
 
@@ -24,6 +26,15 @@ Svako generisanje snima i JSON state pored izvjestaja. State se moze rucno sacuv
 Dugme za konekciju otvara dijalog koji cita connection stringove iz solution konfiguracije kada ih moze pronaci, ali dozvoljava i rucni unos. Windows autentikacija se posebno pazi pri generisanju data source dijela, jer Report Builder/Power BI Report Builder razlikuju connection string i credential type.
 
 Ako se koristi Integrated Security, generator iz connection stringa uklanja credentials i u RDL upisuje `IntegratedSecurity=true`, uz odgovarajuci designer security type.
+
+## Main dataset source
+
+Na `Main dataset` tabu source moze biti:
+
+- `Stored procedure`: postojeci tok rada, sa `Refresh`, izborom procedure, `Inspect` i `Suggest columns`.
+- `SQL text`: raw T-SQL komanda za `dsMain`, sa `Edit SQL...`, `Inspect` i `Suggest columns`.
+
+Stored procedure mode je default i cuva dosadasnje ponasanje. SQL text mode se cuva u JSON-u kao `datasets[dsMain].commandKind = Text`, a sam T-SQL u `datasets[dsMain].command`.
 
 ## Stored procedure i kolone
 
@@ -49,6 +60,33 @@ Automatsko poravnanje je:
 
 Sirine kolona se racunaju automatski po tipu i ocekivanoj duzini. `Tablix width %` na `Body / Tablix` odredjuje ukupnu sirinu tablixa u odnosu na korisnu sirinu stranice, a kolone se onda rasporedjuju unutar te sirine.
 
+## SQL text dataset
+
+SQL text mode je koristan kada glavni dataset jos nije pretvoren u stored proceduru ili kada se zeli brz prototip. `Inspect` ne izvrsava SQL, nego koristi SQL Server metadata:
+
+- `sys.sp_describe_undeclared_parameters` za parametre,
+- `sys.sp_describe_first_result_set` za kolone.
+
+Ako SQL Server ne moze opisati kolone, `Suggest columns` koristi parser koji trazi jedan finalni top-level `SELECT`. Parser ignorise lokalne `DECLARE` varijable, `SELECT INTO #temp`, `INSERT INTO ... SELECT`, `SELECT @var = ...` i select-e iz subquery/CTE konteksta. Ako SQL ima vise stvarnih top-level result select-ova, kolone se ne pune automatski i treba ih urediti rucno ili pojednostaviti SQL.
+
+Primjer:
+
+```sql
+DECLARE @Local int = 1;
+
+SELECT *
+INTO #X
+FROM dbo.SourceTable;
+
+SELECT
+    X.Name,
+    X.Amount
+FROM #X AS X
+WHERE X.MunicipalityId = @MunicipalityId;
+```
+
+`@Local` ne postaje report parametar, a `@MunicipalityId` postaje SQL/report parametar koji se moze povezati kroz `Bind to SP param`.
+
 ## Report params
 
 `Report params` su parametri koje korisnik vidi u report parameter panelu. Oni nisu obavezno isti kao parametri stored procedure. Ovo omogucava scenarije tipa:
@@ -57,7 +95,23 @@ Sirine kolona se racunaju automatski po tipu i ocekivanoj duzini. `Tablix width 
 - `MunicipalityId` filtrira `OrganisationId`,
 - `OrganisationId` se tek onda vezuje na stvarni SP parametar.
 
-Polje `Bind to SP param` povezuje report parametar sa stvarnim SQL parametrom procedure.
+Polje `Bind to SP param` povezuje report parametar sa stvarnim SQL parametrom procedure ili SQL text dataset parametrom.
+
+Ako je `Output` tab povezan na bazu sa `Reporting` semom, dugme `Apply definitions` moze primijeniti postojece `Reporting.ParameterDefinition` vrijednosti na trenutne redove po imenu parametra. Dugme ne dodaje nove parametre i ne pokrece se automatski; namijenjeno je za reuse definicija poslije rucnog dodavanja svih potrebnih report parametara.
+
+`Load from report...` cita parametre iz postojece `Reporting.ReportVersion` konfiguracije. U dijalogu se nude samo trenutno aktivne verzije aktivnih reporta, tj. verzije za koje je danasnji datum izmedju `ValidFrom` i `ValidTo`. Bira se report verzija i checkboxovima oznacavaju parametri za kopiranje. Ako je ukljuceno `Update existing parameters`, redovi sa istim imenom se osvjezavaju kompletnim runtime podesavanjima; ako nije, postojeci redovi se preskacu, a nedostajuci se dodaju.
+
+Za runtime katalog i FE formu koriste se dodatna polja:
+
+- `Visible`: da li se parametar prikazuje u runtime formi.
+- `Entity key`: runtime entitet u obliku `module.entity`.
+- `Value template`: polje ili template vrijednosti, ukljucujuci kompozitne kljuceve.
+- `Display template`: polje ili template koji FE prikazuje korisniku.
+- `Filter path`: putanja za posredno filtriranje kada dependency ne ide direktno preko izabranog UI parametra.
+
+`Runtime settings...` otvara editor runtime postavki za izabrani parametar. Lista ponudjenih stavki dolazi iz `config/report-validators.json` i zavisi od `Control` vrijednosti. Stavke mogu biti `validation`, `behavior` ili `metadata`, npr. `defaultValue`. Izabrane postavke se cuvaju u state JSON-u reporta, a Reporting metadata SQL ih upisuje u `Reporting.UiParameter.RuntimeSettings` kao JSON.
+
+Za datumske runtime postavke `minDate` i `maxDate` vrijednost moze biti fiksni ISO datum (`2026-01-01`) ili izraz poput `today`, `today-7d`, `startOfMonth`, `endOfYear+1d`. Offset jedinice su `d`, `w`, `m`, `q`, `y`.
 
 Lookup moze biti:
 
@@ -211,7 +265,7 @@ Kod objave na Reporting Services treba obratiti paznju na server path subreporta
 
 ## Lokalizacija
 
-Generator moze ubaciti hidden parametre `ReportId` i `LanguageId`, dodati skriveni `dsReportLabels` dataset, i sve staticke labele u RDL-u (naslov, header/footer tekstovi, nazivi kolona, group header-i, „Ukupno", „Podzbir"...) preusmjeriti na ekspresije koje citaju vrijednosti iz konfigurisane tabele prevoda.
+Generator moze ubaciti hidden parametar `ReportId`, obezbijediti `LanguageId`, dodati skriveni `dsReportLabels` dataset, i podrzane staticke labele u RDL-u (naslov, nazivi kolona, group header-i, `Ukupno`, `Podzbir`) preusmjeriti na ekspresije koje citaju vrijednosti iz konfigurisane tabele prevoda.
 
 Konfiguracija je na tabu **Localization** dijaloga.
 
@@ -307,7 +361,26 @@ Cekiraj kada imas centralni („opsti") report sa zajednickim prevodima i ne zel
 
 ### Seed SQL fajl
 
-Ako je **Generate seed SQL next to report** ukljuceno, generator pored .rdl fajla snimi `*.localization.sql` sa `MERGE` blokovima za default jezik i sve dodatne template jezike. Pregledaj prevode prije nego sto ga pustis u produkciju.
+Ako je **Generate seed SQL next to report** ukljuceno, generator pored .rdl/.rdlc fajla snimi `*.translations.sql` sa `MERGE` blokovima za default jezik i sve dodatne template jezike. `MERGE` azurira postojece vrijednosti za isti `ReportId/LanguageId/Key` i dodaje one koje nedostaju, zato skriptu pregledaj prije produkcije.
+
+## Reporting metadata migracije
+
+Na `Output` tabu se moze podesiti posebna konekcija prema bazi koja sadrzi runtime `Reporting` semu. Ta konekcija nije ista stvar kao design-time konekcija za citanje stored procedura ili SQL metadata.
+
+Output tab podrzava:
+
+- `Connection...` i `Test` za Reporting metadata bazu.
+- `Version valid from`: datum od kog vazi generisana verzija reporta.
+- `Migration folder`: folder u koji se snima Flyway SQL.
+- `Preview SQL`: pregled idempotentnog metadata SQL-a za konkretni report.
+- `Execute SQL`: direktno izvrsavanje istog SQL-a na izabranoj Reporting bazi, prvenstveno za dev okruzenje.
+- `Save SQL`: snimanje tog SQL-a u migration folder.
+- `Preview schema`: pregled osnovne skripte za kreiranje `Reporting` seme.
+- `Install schema`: izvrsi osnovnu skriptu samo ako `Reporting` sema jos ne postoji u izabranoj bazi.
+
+Skripta za osnovni model je `Database/Reporting_Core_Model.sql` i ulazi u VSIX paket. Namijenjena je pocetnoj instalaciji. Kasnije izmjene seme treba raditi kroz normalne Flyway migracije.
+
+Bootstrap skripta pored `Reporting` seme obezbjedjuje i `Localization.Language`: ako `Localization` sema ili `Language` tabela ne postoje, kreira ih; ako tabela vec postoji, koristi je i dodaje FK sa `Reporting.ReportVersion.LanguageId` na `Localization.Language.Id`.
 
 
 
@@ -323,6 +396,7 @@ State fajl ima ekstenziju `.sp2rdl.json` i sadrzi kompletan `ReportModel`:
 - page header/footer,
 - report summary,
 - tablix stil.
+- Reporting metadata konekciju, datum verzije i migration folder.
 
 Ovo je glavni format za nastavak rada. Ako se prekine rad, ucitaj state i nastavi bez ponovnog podesavanja.
 
@@ -349,6 +423,8 @@ Svi dokumenti se nalaze i u repozitoriju:
 - `docs/INSTALLATION.md`
 - `docs/REPORT_DEVELOPER_QUICK_GUIDE.md`
 - `docs/TECHNICAL_DOCUMENTATION.md`
+- `Database/Reporting_Core_Model.sql`
+- `config/report-validators.json`
 
 ## Odrzavanje
 

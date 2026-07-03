@@ -9,14 +9,11 @@
 
 ## Summary
 
-Dodati podrsku za visejezicnost statickih labela u generisanim RDL izvjestajima: naslov izvjestaja, naslovi kolona, header/footer tekstovi, summary/potpisne sekcije i drugi fiksni tekstovi u layout-u.
+Dodati podrsku za visejezicnost statickih labela u generisanim RDL izvjestajima. Trenutno implementirani opseg obuhvata naslov izvjestaja, naslove kolona, group header labele, `Ukupno` i `Podzbir`.
 
 Ne prevoditi podatke koji dolaze iz glavnog dataset-a.
 
-Generator treba podrzati dva nacina citanja prevoda:
-
-- direktno iz konfigurisane tabele prevoda
-- preko konfigurisane procedure/funkcije za prevode
+Generator trenutno cita prevode direktno iz konfigurisane tabele prevoda. Raniji mod preko procedure/funkcije je uklonjen iz UI-a i ne treba ga koristiti u novoj konfiguraciji.
 
 ## Localization Config
 
@@ -32,16 +29,22 @@ U sp2rdl config dodati sekciju:
   "accessMode": "table",
 
   "translationTable": {
-    "schema": "BasicCatalogs",
-    "name": "ReportTranslation"
+    "schema": "",
+    "name": ""
+  },
+
+  "reportTable": {
+    "schema": "",
+    "name": ""
   },
 
   "translationProcedure": {
-    "schema": "Report",
-    "name": "Translation"
+    "schema": "",
+    "name": ""
   },
 
   "generateDefaultLanguageSeed": true,
+  "skipKeysFromGeneralReport": false,
   "generateLanguageTemplatesFor": [1],
   "languageTemplateValueMode": "copyDefault"
 }
@@ -49,10 +52,13 @@ U sp2rdl config dodati sekciju:
 
 Pravila:
 
-- `accessMode = "table"` koristi `translationTable.schema/name`.
-- `accessMode = "procedure"` koristi `translationProcedure.schema/name`.
+- `accessMode` ostaje u JSON modelu radi kompatibilnosti, ali UI podrzava samo table mode.
+- `translationTable.schema/name` mora biti popunjeno za runtime prevode i seed SQL.
+- `reportTable.schema/name` mora biti popunjeno za dugme **Register report**.
+- `translationProcedure` ostaje u JSON modelu radi kompatibilnosti, ali se ne koristi u UI workflow-u.
 - `defaultLanguageId` je jezik originalnih/default tekstova.
 - `generalReportId` je fallback report za zajednicke labele, podrazumijevano `0`.
+- `skipKeysFromGeneralReport` preskace seed/merge za kljuceve koji vec postoje pod `generalReportId`.
 - `generateLanguageTemplatesFor` je lista dodatnih jezika za koje generator pravi template SQL skriptu.
 - `languageTemplateValueMode` definise sta ide u `Value` za dodatne jezike.
 
@@ -136,6 +142,8 @@ Summary.Director
 Summary.InvoicedBy
 ```
 
+Napomena: `Footer.*` i `Summary.*` kljucevi ostaju kao planirani primjer za kasniju doradu. Trenutni generator ih jos ne sakuplja automatski u `LocalizationLabelCollector`.
+
 ## RDL Parameters
 
 Kada je `localization.enabled = true`, generator dodaje/obezbjedjuje:
@@ -157,18 +165,7 @@ Ne dodavati runtime checkbox `EnableLocalization` u RDL. Visejezicnost je genera
 
 ## Dataset `dsReportLabels`
 
-Generator dodaje dataset `dsReportLabels` koji vraca tacno jednu vrstu i jednu kolonu po labeli.
-
-Za `accessMode = "procedure"`:
-
-```sql
-SELECT
-    COALESCE(MAX(CASE WHEN T.[KEY] = 'ReportTitle' THEN T.Value END), N'Pregled ucenika na praksi') AS ReportTitle,
-    COALESCE(MAX(CASE WHEN T.[KEY] = 'Column.Odjeljenje' THEN T.Value END), N'Odjeljenje') AS Column_Odjeljenje
-FROM [Report].[Translation](@ReportId, @LanguageId) AS T;
-```
-
-Za `accessMode = "table"` generator pravi SQL direktno nad konfigurisanom tabelom:
+Generator dodaje dataset `dsReportLabels` koji vraca tacno jednu vrstu i jednu kolonu po labeli. Generator pravi SQL direktno nad konfigurisanom tabelom prevoda:
 
 ```sql
 WITH T AS
@@ -210,7 +207,7 @@ Dataset parametri:
 ```text
 @ReportId = Parameters!ReportId.Value
 @LanguageId = Parameters!LanguageId.Value
-@GeneralReportId = localization.generalReportId
+GeneralReportId se ugradjuje kao vrijednost iz localization.generalReportId
 ```
 
 ## RDL Expressions
@@ -251,27 +248,25 @@ Primjer:
 
 ## Seed SQL
 
-Generator opciono generise SQL seed skriptu za default jezik.
+Generator opciono generise SQL seed skriptu `*.translations.sql` pored RDL/RDLC fajla.
 
-Seed mora koristiti konfigurisani `translationTable.schema/name` i ne smije prepisivati postojece rucne prevode.
+Seed koristi konfigurisani `translationTable.schema/name` i generise `MERGE` blokove. Postojeci zapis za isti `ReportId/LanguageId/Key` se azurira default/template vrijednoscu, a nedostajuci zapis se dodaje. Skriptu treba pregledati prije produkcije.
 
 Primjer:
 
 ```sql
-IF NOT EXISTS (
-    SELECT 1
-    FROM [BasicCatalogs].[ReportTranslation]
-    WHERE ReportId = 2093
-      AND LanguageId = 3
-      AND [Key] = 'Column.Odjeljenje'
-      AND Deleted = 0
-)
-BEGIN
-    INSERT INTO [BasicCatalogs].[ReportTranslation]
-        (ReportId, LanguageId, [Key], Value, Deleted)
-    VALUES
-        (2093, 3, 'Column.Odjeljenje', N'Odjeljenje', 0);
-END
+MERGE INTO [BasicCatalogs].[ReportTranslation] AS T
+USING (VALUES (2093, 3, 'Column.Odjeljenje', N'Odjeljenje'))
+    AS S(ReportId, LanguageId, [Key], [Value])
+    ON T.ReportId = S.ReportId
+   AND T.LanguageId = S.LanguageId
+   AND T.[Key] = S.[Key]
+   AND T.Deleted = 0
+WHEN MATCHED THEN
+    UPDATE SET [Value] = S.[Value]
+WHEN NOT MATCHED THEN
+    INSERT (ReportId, LanguageId, [Key], [Value], Deleted)
+    VALUES (S.ReportId, S.LanguageId, S.[Key], S.[Value], 0);
 ```
 
 Za jezike iz `generateLanguageTemplatesFor`, generator pravi dodatne template seed zapise sa upisanim `LanguageId`.
@@ -279,20 +274,18 @@ Za jezike iz `generateLanguageTemplatesFor`, generator pravi dodatne template se
 Primjer za `LanguageId = 1` i `languageTemplateValueMode = "copyDefault"`:
 
 ```sql
-IF NOT EXISTS (
-    SELECT 1
-    FROM [BasicCatalogs].[ReportTranslation]
-    WHERE ReportId = 2093
-      AND LanguageId = 1
-      AND [Key] = 'Column.Odjeljenje'
-      AND Deleted = 0
-)
-BEGIN
-    INSERT INTO [BasicCatalogs].[ReportTranslation]
-        (ReportId, LanguageId, [Key], Value, Deleted)
-    VALUES
-        (2093, 1, 'Column.Odjeljenje', N'Odjeljenje', 0);
-END
+MERGE INTO [BasicCatalogs].[ReportTranslation] AS T
+USING (VALUES (2093, 1, 'Column.Odjeljenje', N'Odjeljenje'))
+    AS S(ReportId, LanguageId, [Key], [Value])
+    ON T.ReportId = S.ReportId
+   AND T.LanguageId = S.LanguageId
+   AND T.[Key] = S.[Key]
+   AND T.Deleted = 0
+WHEN MATCHED THEN
+    UPDATE SET [Value] = S.[Value]
+WHEN NOT MATCHED THEN
+    INSERT (ReportId, LanguageId, [Key], [Value], Deleted)
+    VALUES (S.ReportId, S.LanguageId, S.[Key], S.[Value], 0);
 ```
 
 Ponasalje `languageTemplateValueMode`:
@@ -317,8 +310,8 @@ Generator:
 - zna koje staticke labele postoje
 - generise `dsReportLabels`
 - generise kratke RDL expression-e
-- generise default-language seed SQL
-- generise template seed za jezike iz `generateLanguageTemplatesFor`
+- generise default-language seed SQL kao `MERGE`
+- generise template seed za jezike iz `generateLanguageTemplatesFor` kao `MERGE`
 
 Admin/interfejs za prevode:
 
@@ -335,14 +328,14 @@ Provjeriti:
 - RDL ima `LanguageId`
 - postoji dataset `dsReportLabels`
 - `dsReportLabels` vraca jednu vrstu
-- `accessMode = "table"` koristi konfigurisanu semu i tabelu
-- `accessMode = "procedure"` koristi konfigurisanu proceduru/funkciju
+- table mode koristi konfigurisanu semu i tabelu prevoda
+- procedure mode nije dio UI workflow-a
 - staticke labele koriste kratke `First(Fields!...` izraze
 - default jezik prikazuje fallback vrijednosti
 - drugi jezik prikazuje unesene prevode
 - nedostajuci prevod pada na `defaultValue`
 - report-specific prevod ima prednost nad `generalReportId`
-- seed SQL ne prepisuje postojece prevode
+- seed SQL koristi MERGE i azurira/dodaje zapise za isti `ReportId/LanguageId/Key`
 - template SQL ima vec upisan ciljani `LanguageId`
 - page header/footer rade u preview-u i PDF export-u
 
@@ -359,10 +352,10 @@ Implementiran je prvi stabilni korak lokalizacije:
 - pored RDL fajla generise se `*.translations.sql` seed skripta kada je ukljucen `Generate seed SQL`
 - u `Stored procedure columns` dodata je kolona `Default label`; seed za default jezik i fallback vrijednosti labela koriste taj tekst kada je unesen, a tehnicki naziv kolone ostaje fallback
 
-Napomena za naredni korak:
+Napomena:
 
-- `accessMode = procedure` trenutno generise SQL oblik za table-valued funkciju/proceduralni wrapper koji se moze koristiti u `FROM` dijelu upita. Ako bude potrebna prava stored procedure koja vraca result set, generator treba prosiriti posebnim mehanizmom jer SQL Server ne moze direktno pivotirati `EXEC proc` u istom SELECT-u.
-- page header/footer prevodi nisu agresivno uvedeni u ovom koraku zbog RDL ogranicenja oko dataset izraza u page sekcijama. Za njih treba koristiti hidden body textbox + `ReportItems!` pristup iz plana.
+- `accessMode` i `translationProcedure` ostaju u modelu samo radi kompatibilnosti sa ranije sacuvanim JSON state fajlovima.
+- page header/footer prevodi nisu agresivno uvedeni zbog RDL ogranicenja oko dataset izraza u page sekcijama. Za njih treba koristiti hidden body textbox + `ReportItems!` pristup iz plana.
 
 ## Assumptions
 

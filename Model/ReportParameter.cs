@@ -18,6 +18,14 @@ internal sealed class ReportParameter
 
     public bool Hidden { get; set; }
 
+    public bool IsVisible { get; set; } = true;
+
+    public string? EntityKey { get; set; }
+
+    public string? ValueFieldTemplate { get; set; }
+
+    public string? DisplayFieldTemplate { get; set; }
+
     public string? DefaultValueExpression { get; set; }
 
     public string? DefaultValueSql { get; set; }
@@ -32,6 +40,8 @@ internal sealed class ReportParameter
 
     public string? DependsOnParameterName { get; set; }
 
+    public string? DependencyFilterPath { get; set; }
+
     public string? BindToDatasetParameterName { get; set; }
 
     public string? CompareToParameterName { get; set; }
@@ -41,6 +51,8 @@ internal sealed class ReportParameter
     public LookupConfig? Lookup { get; set; }
 
     public List<StaticValidValue> StaticValidValues { get; set; } = new();
+
+    public List<ParameterValidatorValue> RuntimeSettings { get; set; } = new();
 
     public List<ParameterDependency> Dependencies { get; set; } = new();
 

@@ -21,7 +21,7 @@ Ako treba nastaviti rad kasnije, ucitava se JSON state, a ne rekonstruise sve iz
 Generator radi kroz nekoliko slojeva:
 
 1. `General`: sta pravimo i iz koje baze.
-2. `Main dataset`: koja stored procedura i koje kolone cine glavni body.
+2. `Main dataset`: da li glavni body dolazi iz stored procedure ili SQL text-a i koje kolone se prikazuju.
 3. `Report params`: koje parametre korisnik vidi.
 4. `Report variables`: interne vrijednosti za memorandum, footer i summary.
 5. `Body / Tablix`: izgled glavne tabele, grupe, subtotali i total.
@@ -34,16 +34,17 @@ Generator radi kroz nekoliko slojeva:
 
 1. Pokreni `Extensions > SP to RDL Generator`.
 2. Na `General` tabu klikni connection dugme i podesi konekciju.
-3. Klikni `Load procedures`.
-4. Izaberi stored proceduru.
-5. Klikni `Inspect`.
-6. Provjeri `Main dataset`:
+3. Na `Main dataset` ostavi `Source = Stored procedure`.
+4. Klikni `Refresh`.
+5. Izaberi stored proceduru.
+6. Klikni `Inspect`.
+7. Provjeri `Main dataset`:
    - da li se vide parametri procedure,
    - da li se vide kolone.
-7. Ako kolone nisu prepoznate, klikni `Suggest columns`.
-8. Na `Output` izaberi gdje ide `.rdl`.
-9. Klikni `Generate`.
-10. Otvori `.rdl` u Report Builderu.
+8. Ako kolone nisu prepoznate, klikni `Suggest columns`.
+9. Na `Output` izaberi gdje ide `.rdl`.
+10. Klikni `Generate`.
+11. Otvori `.rdl` u Report Builderu.
 
 Ako se report otvori bez greske, prvi cilj je zavrsen.
 
@@ -98,7 +99,7 @@ Rezultat:
 
 Razlikuj dvije stvari:
 
-- SQL params: stvarni parametri stored procedure.
+- SQL params: stvarni parametri stored procedure ili SQL text dataset-a.
 - Report params: parametri koje korisnik vidi u reportu.
 
 Jedan report parametar moze biti vezan na SQL parametar kroz `Bind to SP param`.
@@ -112,6 +113,48 @@ OrganisationId  zavisi od MunicipalityId i binduje se na SP parametar @Organisat
 ```
 
 Za `Depends on` biraj samo parametre koji su prije trenutnog parametra. Zato je `Ordinal` vazan.
+
+Ako u Reporting bazi vec postoje ceste definicije parametara, npr. `RegionId`, `MunicipalityId` ili `OrganisationId`, prvo dodaj potrebne redove u `Report params`, zatim na `Output` tabu podesi `Reporting connection`, pa klikni `Apply definitions`. Generator ce po imenu parametra popuniti globalne default vrijednosti iz `Reporting.ParameterDefinition`, bez automatskog dodavanja novih redova.
+
+Ako novi report treba gotovo iste runtime parametre kao neki raniji report, koristi `Load from report...`. Lista nudi samo trenutno aktivne verzije aktivnih reporta. Izaberi report verziju, oznaci parametre checkboxovima i po potrebi ukljuci `Update existing parameters` da se istoimeni redovi kompletno osvjeze. Bez tog checkboxa postojeci parametri ostaju netaknuti, a dodaju se samo nedostajuci.
+
+Za runtime FE formu mozes popuniti i metadata polja:
+
+- `Visible`: prikazuje ili skriva parametar u runtime formi.
+- `Entity key`: entitet u obliku `module.entity`.
+- `Value template`: vrijednost koja se salje bekendu; moze biti i kompozitni template.
+- `Display template`: tekst koji korisnik vidi u lookupu.
+- `Filter path`: posredno filtriranje, npr. kada izbor regije treba u pozadini filtrirati opstine prije prikaza skola.
+
+Za runtime validaciju i runtime metadata klikni `Runtime settings...` na redu parametra. Dialog prikazuje samo stavke dozvoljene za izabrani `Control`, prema `config/report-validators.json`. Izabrane postavke i vrijednosti se cuvaju u state fajlu i u Reporting metadata SQL-u kao JSON u `UiParameter.RuntimeSettings`.
+
+Za `minDate` i `maxDate` mozes unijeti `yyyy-MM-dd` ili izraze kao `today`, `today-7d`, `startOfMonth`, `endOfMonth`, `startOfYear`, `endOfYear+1d`.
+
+## SQL text kao main dataset
+
+Ako jos nemas stored proceduru ili pravis prototip:
+
+1. Na `Main dataset` izaberi `Source = SQL text`.
+2. Klikni `Edit SQL...`.
+3. Unesi T-SQL koji vraca glavni rezultat.
+4. Klikni `Inspect`.
+5. Ako kolone nisu prepoznate, klikni `Suggest columns` ili ih dodaj rucno.
+
+`Inspect` ne izvrsava SQL, nego trazi metadata kroz SQL Server. Lokalne varijable iza `DECLARE` ne postaju report parametri. Parametri koje SQL ocekuje pisi kao `@NazivParametra`.
+
+Primjer:
+
+```sql
+DECLARE @Local int = 1;
+
+SELECT
+    O.OrganisationId,
+    O.Name
+FROM BasicCatalogs.Organisation AS O
+WHERE O.MunicipalityId = @MunicipalityId;
+```
+
+U ovom primjeru `@MunicipalityId` ulazi u SQL params, a `@Local` ne ulazi.
 
 ## Lookup SQL
 
@@ -151,6 +194,20 @@ Primjer:
 Lijeva strana je vrijednost koja se prosljedjuje reportu/SP-u. Desna strana je tekst koji korisnik vidi u parameter panelu. Ako ne upises label, koristi se ista vrijednost kao label.
 
 Static values su korisne za status, tip, nivo, pol i slicne male liste.
+
+## Output i Reporting metadata
+
+Na `Output` tabu biras gdje ide `.rdl`, ali tu mozes pripremiti i runtime metadata SQL:
+
+1. Podesi `Reporting connection` prema bazi koja sadrzi `Reporting` semu.
+2. Klikni `Test` da provjeris konekciju.
+3. Izaberi `Version valid from`; to je datum od kog verzija reporta vazi.
+4. Izaberi `Migration folder` za Flyway skripte.
+5. Klikni `Preview SQL` da pregledas MERGE/INSERT skriptu za trenutni report.
+6. U dev bazi mozes kliknuti `Execute SQL` da odmah upises metadata.
+7. Za QA, staging i produkciju klikni `Save SQL` i pusti skriptu kroz Flyway.
+
+Ako baza jos nema osnovnu `Reporting` semu, `Preview schema` prikazuje bootstrap skriptu, a `Install schema` je moze izvrsiti samo dok sema ne postoji. Za svaku kasniju izmjenu seme koristi redovnu migraciju, ne ponovni install.
 
 ## Report variables
 
@@ -279,20 +336,20 @@ Tabele mogu imati i druge kolone (Audit, CreatedBy, itd.) — generator dira sam
 
 1. Cekiraj **Enable generated label localization**.
 2. Unesi **Default LanguageId** (jezik koji se koristi kad nema prevoda).
-3. Po potrebi **General ReportId** (zajednicki report za prevode kao sto su „Ukupno", „Strana", „od").
+3. Po potrebi **General ReportId** (zajednicki report za prevode kao sto su `Ukupno`, `Podzbir` ili nazivi kolona koji se ponavljaju u vise reporta).
 4. Popuni **Translation table schema/name** i **Report table schema/name** prema tvojoj bazi.
 5. Klikni **Register report**:
    - generator radi MERGE u Report tabeli po `InternalName` (= **Report name** sa tab-a Report),
    - vrati `ReportId` u polje na formi,
    - ako je localization ukljuceno, automatski prebaci default-language prevode kroz MERGE u ReportTranslation.
-6. Cekiraj **Generate seed SQL** ako zelis i `.localization.sql` fajl pored .rdl-a (sa MERGE blokovima koje mozes pregledati prije produkcije).
+6. Cekiraj **Generate seed SQL** ako zelis i `.translations.sql` fajl pored .rdl/.rdlc-a (sa MERGE blokovima koje mozes pregledati prije produkcije).
 7. **Skip keys already translated under General ReportId** — kad zelis da prevodi koji vec postoje pod opstim report-om ne dupliraju za konkretni report.
 
 ### Sta se desi u generisanom RDL-u
 
 - Dodaju se hidden parametri `ReportId` (= dobijeni id), `LanguageId` (= default).
 - Dodaje se skriveni `dsReportLabels` koji povlaci sve labele jednim SELECT-om.
-- Sve staticke labele (naslov, kolone, „Ukupno", header/footer tekst, itd.) se zamijene ekspresijom koja prvo trazi prevod za `ReportId`, pa fallback na `GeneralReportId`, pa fallback na hardkodovan default.
+- Podrzane staticke labele (naslov, kolone, group header labeli, `Ukupno`, `Podzbir`) se zamijene ekspresijom koja prvo trazi prevod za `ReportId`, pa fallback na `GeneralReportId`, pa fallback na hardkodovan default.
 
 ### Prepravka prevoda nakon generisanja
 

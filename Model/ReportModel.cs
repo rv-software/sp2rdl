@@ -20,6 +20,12 @@ internal sealed class ReportModel
 
     public string? OutputPath { get; set; }
 
+    public string? ReportingConnectionString { get; set; }
+
+    public DateTime? ReportingVersionValidFrom { get; set; }
+
+    public string? ReportingMigrationFolder { get; set; }
+
     public string BaseFontFamily { get; set; } = "Arial";
 
     public string SharedDataSourceName { get; set; } = "dsrMain";

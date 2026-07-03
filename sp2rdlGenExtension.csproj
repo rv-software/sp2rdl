@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0-windows8.0</TargetFramework>
     <Version>0.1.0</Version>
@@ -23,11 +23,15 @@
     <EmbeddedResource Include="docs\INSTALLATION.md" LogicalName="sp2rdlGenExtension.Help.docs.INSTALLATION.md" />
     <EmbeddedResource Include="docs\REPORT_DEVELOPER_QUICK_GUIDE.md" LogicalName="sp2rdlGenExtension.Help.docs.REPORT_DEVELOPER_QUICK_GUIDE.md" />
     <EmbeddedResource Include="docs\TECHNICAL_DOCUMENTATION.md" LogicalName="sp2rdlGenExtension.Help.docs.TECHNICAL_DOCUMENTATION.md" />
+    <EmbeddedResource Include="Database\Reporting_Core_Model.sql" LogicalName="sp2rdlGenExtension.Database.Reporting_Core_Model.sql" />
+    <EmbeddedResource Include="config\report-validators.json" LogicalName="sp2rdlGenExtension.Config.report-validators.json" />
   </ItemGroup>
 
   <ItemGroup>
     <Content Include="README.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="docs\*.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Database\*.sql" CopyToOutputDirectory="Always" />
+    <Content Include="config\*.json" CopyToOutputDirectory="Always" />
   </ItemGroup>
 
   <Target Name="UseWindowsSqlClientRuntimeAssembly" AfterTargets="Build">

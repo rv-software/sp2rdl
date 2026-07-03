@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.SqlClient;
+using System.Globalization;
 using sp2rdlGenExtension.Model;
 
 namespace sp2rdlGenExtension.Services;
@@ -100,6 +101,51 @@ internal sealed class SqlIntrospector
         var definition = await command.ExecuteScalarAsync(cancellationToken) as string;
         return SqlProcedureColumnSuggester.SuggestFields(definition ?? string.Empty);
     }
+
+    /// <summary>
+    /// Reads parameter and result-column metadata for a raw SQL dataset without executing the SQL text.
+    /// </summary>
+    public async Task<SqlTextDatasetMetadata> ReadSqlTextDatasetAsync(
+        string connectionString,
+        string sqlText,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sqlText);
+
+        using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var parameters = await ReadSqlTextParametersAsync(connection, sqlText, cancellationToken);
+        IReadOnlyList<DatasetField> fields;
+        string? resultSetWarning = null;
+
+        try
+        {
+            fields = await ReadSqlTextResultFieldsAsync(connection, sqlText, BuildSqlTextParameterDefinition(parameters), cancellationToken);
+        }
+        catch (Exception ex) when (ex is SqlException or InvalidOperationException or IndexOutOfRangeException)
+        {
+            var fallback = SqlTextAnalyzer.SuggestFieldsFromFinalResultSelect(sqlText);
+            fields = fallback.Fields;
+            resultSetWarning = fallback.Warning
+                ?? $"SQL Server metadata could not describe result columns; parser fallback suggested {fields.Count} column(s). Details: {ex.Message}";
+        }
+
+        return new SqlTextDatasetMetadata(parameters, fields, resultSetWarning);
+    }
+
+    /// <summary>
+    /// Suggests fields from raw SQL text using the final top-level SELECT parser.
+    /// </summary>
+    public SqlTextAnalysisResult SuggestFieldsFromSqlText(string sqlText)
+        => SqlTextAnalyzer.SuggestFieldsFromFinalResultSelect(sqlText);
+
+    /// <summary>
+    /// Builds conservative parameter metadata directly from SQL text parser output.
+    /// </summary>
+    public IReadOnlyList<SpParameter> SuggestParametersFromSqlText(string sqlText)
+        => BuildFallbackSqlTextParameters(SqlTextAnalyzer.FindUndeclaredParameterNames(sqlText));
 
     public async Task<LookupSqlSuggestion?> SuggestLookupSqlAsync(
         string connectionString,
@@ -366,6 +412,214 @@ internal sealed class SqlIntrospector
         }
 
         return parameters;
+    }
+
+    /// <summary>
+    /// Reads undeclared SQL text parameters through SQL Server metadata with parser fallback.
+    /// </summary>
+    private static async Task<IReadOnlyList<SpParameter>> ReadSqlTextParametersAsync(
+        SqlConnection connection,
+        string sqlText,
+        CancellationToken cancellationToken)
+    {
+        var parserParameterNames = SqlTextAnalyzer.FindUndeclaredParameterNames(sqlText);
+        try
+        {
+            var describedParameters = await DescribeUndeclaredParametersAsync(connection, sqlText, cancellationToken);
+            return MergeSqlTextParameterMetadata(describedParameters, parserParameterNames);
+        }
+        catch (Exception ex) when (ex is SqlException or InvalidOperationException or IndexOutOfRangeException)
+        {
+            return BuildFallbackSqlTextParameters(parserParameterNames);
+        }
+    }
+
+    /// <summary>
+    /// Adds parser-discovered parameters missing from SQL Server metadata.
+    /// </summary>
+    private static IReadOnlyList<SpParameter> MergeSqlTextParameterMetadata(
+        IReadOnlyList<SpParameter> describedParameters,
+        IReadOnlyList<string> parserParameterNames)
+    {
+        var merged = describedParameters.ToList();
+        var knownNames = merged
+            .Select(parameter => parameter.Name.TrimStart('@'))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var parserName in parserParameterNames)
+        {
+            var normalizedName = parserName.TrimStart('@');
+            if (string.IsNullOrWhiteSpace(normalizedName) || knownNames.Contains(normalizedName))
+            {
+                continue;
+            }
+
+            merged.Add(new SpParameter(
+                "@" + normalizedName,
+                "nvarchar",
+                true,
+                false,
+                false,
+                merged.Count + 1));
+            knownNames.Add(normalizedName);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// Builds conservative parameter metadata from parser-discovered SQL text parameters.
+    /// </summary>
+    private static IReadOnlyList<SpParameter> BuildFallbackSqlTextParameters(IReadOnlyList<string> parameterNames)
+        => parameterNames
+            .Select((name, index) => new SpParameter(
+                "@" + name.TrimStart('@'),
+                "nvarchar",
+                true,
+                false,
+                false,
+                index + 1))
+            .ToList();
+
+    /// <summary>
+    /// Calls sys.sp_describe_undeclared_parameters for raw SQL text.
+    /// </summary>
+    private static async Task<IReadOnlyList<SpParameter>> DescribeUndeclaredParametersAsync(
+        SqlConnection connection,
+        string sqlText,
+        CancellationToken cancellationToken)
+    {
+        using var command = new SqlCommand("sys.sp_describe_undeclared_parameters", connection)
+        {
+            CommandType = CommandType.StoredProcedure,
+            CommandTimeout = 15
+        };
+        command.Parameters.Add("@tsql", SqlDbType.NVarChar, -1).Value = sqlText;
+
+        var parameters = new List<SpParameter>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var name = ReadNullableString(reader, "name");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var sqlTypeName = ReadNullableString(reader, "suggested_system_type_name");
+            parameters.Add(new SpParameter(
+                name.StartsWith('@') ? name : "@" + name,
+                string.IsNullOrWhiteSpace(sqlTypeName) ? "nvarchar" : sqlTypeName,
+                true,
+                false,
+                false,
+                parameters.Count + 1));
+        }
+
+        return parameters;
+    }
+
+    /// <summary>
+    /// Reads result columns for raw SQL text through sys.sp_describe_first_result_set.
+    /// </summary>
+    private static async Task<IReadOnlyList<DatasetField>> ReadSqlTextResultFieldsAsync(
+        SqlConnection connection,
+        string sqlText,
+        string parameterDefinition,
+        CancellationToken cancellationToken)
+    {
+        using var command = new SqlCommand("sys.sp_describe_first_result_set", connection)
+        {
+            CommandType = CommandType.StoredProcedure,
+            CommandTimeout = 15
+        };
+        command.Parameters.Add("@tsql", SqlDbType.NVarChar, -1).Value = sqlText;
+        command.Parameters.Add("@params", SqlDbType.NVarChar, -1).Value = parameterDefinition;
+        command.Parameters.Add("@browse_information_mode", SqlDbType.TinyInt).Value = 0;
+
+        var fields = new List<DatasetField>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (HasColumn(reader, "error_number") && reader["error_number"] is not DBNull)
+            {
+                throw new InvalidOperationException($"Could not describe SQL text result set: {ReadNullableString(reader, "error_message")}");
+            }
+
+            if (HasColumn(reader, "is_hidden") && reader["is_hidden"] is bool isHidden && isHidden)
+            {
+                continue;
+            }
+
+            var name = ReadNullableString(reader, "name");
+            var systemTypeName = ReadNullableString(reader, "system_type_name");
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(systemTypeName))
+            {
+                continue;
+            }
+
+            fields.Add(new DatasetField(
+                name,
+                systemTypeName,
+                HasColumn(reader, "is_nullable") && reader["is_nullable"] is bool isNullable && isNullable,
+                ReadInt32(reader, "column_ordinal", fields.Count + 1),
+                DatasetFieldDraft.GetDefaultFormat(systemTypeName)));
+        }
+
+        return fields;
+    }
+
+    /// <summary>
+    /// Builds the @params definition string required by sys.sp_describe_first_result_set.
+    /// </summary>
+    private static string BuildSqlTextParameterDefinition(IEnumerable<SpParameter> parameters)
+        => string.Join(
+            ", ",
+            parameters
+                .Where(parameter => !parameter.IsOutput)
+                .Select(parameter => $"{(parameter.Name.StartsWith('@') ? parameter.Name : "@" + parameter.Name)} {parameter.SqlTypeName}"));
+
+    /// <summary>
+    /// Checks whether a data reader result contains a metadata column.
+    /// </summary>
+    private static bool HasColumn(SqlDataReader reader, string columnName)
+    {
+        for (var index = 0; index < reader.FieldCount; index++)
+        {
+            if (string.Equals(reader.GetName(index), columnName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Reads an optional string metadata column without assuming it is always present.
+    /// </summary>
+    private static string? ReadNullableString(SqlDataReader reader, string columnName)
+    {
+        if (!HasColumn(reader, columnName))
+        {
+            return null;
+        }
+
+        var value = reader[columnName];
+        return value is DBNull ? null : value as string ?? value.ToString();
+    }
+
+    /// <summary>
+    /// Reads an optional integer metadata column with a fallback value.
+    /// </summary>
+    private static int ReadInt32(SqlDataReader reader, string columnName, int fallback)
+    {
+        if (!HasColumn(reader, columnName) || reader[columnName] is DBNull)
+        {
+            return fallback;
+        }
+
+        return Convert.ToInt32(reader[columnName], CultureInfo.InvariantCulture);
     }
 
     private static async Task<IReadOnlyList<DatasetField>> ReadResultFieldsAsync(

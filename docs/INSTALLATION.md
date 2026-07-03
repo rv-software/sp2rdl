@@ -64,12 +64,15 @@ VSIX treba da sadrzi:
 - `docs/INSTALLATION.md`
 - `docs/REPORT_DEVELOPER_QUICK_GUIDE.md`
 - `docs/TECHNICAL_DOCUMENTATION.md`
+- `Database/Reporting_Core_Model.sql`
+- `config/report-validators.json`
 
 U instaliranoj ekstenziji ovi dokumenti su dostupni iz glavnog dijaloga kroz dugmad:
 
 - `README`
-- `Install`
 - `Quick guide`
+
+`docs/INSTALLATION.md` se isporucuje pored VSIX-a kao `install.md`, jer se cita prije pokretanja ekstenzije.
 
 ## Prva funkcionalna provjera
 
@@ -77,7 +80,7 @@ Nakon instalacije:
 
 1. Otvori Visual Studio i solution.
 2. Pokreni `Extensions > SP to RDL Generator`.
-3. Klikni `README`, `Install` i `Quick guide` da provjeris da se dokumenti otvaraju.
+3. Klikni `README` i `Quick guide` da provjeris da se dokumenti otvaraju.
 4. Na `General` tabu podesi konekciju.
 5. Ucitaj stored procedure.
 6. Izaberi jednu jednostavnu proceduru.
@@ -100,11 +103,17 @@ Nakon instalacije:
 - Provjeri da build log sadrzi poruku `Replacing SQL Client runtime assemblies in VSIX.`
 - Ponovo instaliraj generisani VSIX.
 
-### README/Install/Quick guide se ne otvaraju
+### README/Quick guide se ne otvaraju
 
 - Provjeri da dokumenti postoje u output folderu.
 - Rebuilduj solution.
 - Ako se koristi vec instaliran VSIX, ponovo instaliraj najnoviji VSIX.
+
+### Reporting schema install
+
+Na `Output` tabu dugme `Install schema` koristi konekciju iz `Reporting connection` i izvrsi `Database/Reporting_Core_Model.sql` samo ako u ciljnoj bazi jos ne postoji `Reporting` sema. Ako sema postoji, instalacija se prekida bez izmjena.
+
+Bootstrap skripta takodje provjerava `Localization` semu i `Localization.Language` tabelu. Ako ne postoje, kreira ih i seeduje osnovne jezike; ako `Language` vec postoji, koristi postojecu tabelu i dodaje FK sa `Reporting.ReportVersion.LanguageId`.
 
 ### Dijalog ode iza Visual Studija
 
@@ -119,4 +128,3 @@ Za timski rad najjednostavnije je:
 3. Uz VSIX se navede verzija i datum.
 4. Report developeri instaliraju isti VSIX.
 5. Za svaki report se cuva i `.sp2rdl.json` state fajl u repozitoriju ili dogovorenom folderu.
-

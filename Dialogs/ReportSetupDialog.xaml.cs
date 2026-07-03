@@ -22,6 +22,12 @@ namespace sp2rdlGenExtension.Dialogs;
 
 internal sealed record Choice<T>(T Value, string Label);
 
+internal enum MainDatasetSourceMode
+{
+    StoredProcedure,
+    SqlText
+}
+
 #pragma warning disable CS0618 // Project decision: use System.Data.SqlClient for VSIX compatibility.
 public partial class ReportSetupDialog : Window
 {
@@ -32,6 +38,10 @@ public partial class ReportSetupDialog : Window
     private static readonly Regex CssTextAlignRegex = new(
         @"text-align\s*:\s*(?<align>left|center|right)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex SqlGoBatchRegex = new(
+        @"^\s*GO\s*(?:--.*)?$",
+        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
+    private const string ReportingSchemaSqlResourceName = "sp2rdlGenExtension.Database.Reporting_Core_Model.sql";
 
     private static readonly IReadOnlyList<string> SqlTypeNames =
     [
@@ -71,6 +81,8 @@ public partial class ReportSetupDialog : Window
     private readonly string solutionDirectory;
     private readonly SqlIntrospector sqlIntrospector;
     private readonly ReportOutputWriter outputWriter;
+    private readonly ReportValidatorCatalog validatorCatalog;
+    private readonly ReportingMetadataReader reportingMetadataReader = new();
     private readonly ObservableCollection<DatasetFieldDraft> fieldDrafts = new();
     private readonly ObservableCollection<ReportParameter> reportParameters = new();
     private readonly ObservableCollection<ReportVariableConfig> reportVariables = new();
@@ -79,6 +91,7 @@ public partial class ReportSetupDialog : Window
     private readonly CancellationTokenSource cts = new();
     private StoredProcedureMetadata? currentMetadata;
     private TextBox? activeReportSummaryTemplateBox;
+    private string mainDatasetSqlText = string.Empty;
 
     internal ReportGenerationRequest Request { get; private set; } = new();
 
@@ -87,6 +100,7 @@ public partial class ReportSetupDialog : Window
         this.solutionDirectory = solutionDirectory;
         this.sqlIntrospector = sqlIntrospector;
         this.outputWriter = outputWriter;
+        this.validatorCatalog = ReportValidatorCatalog.Load(solutionDirectory);
         InitializeComponent();
         LoadInstalledFonts();
         ColFieldSqlType.ItemsSource = SqlTypeNames;
@@ -100,9 +114,11 @@ public partial class ReportSetupDialog : Window
         GridReportParameters.ItemsSource = this.reportParameters;
         GridReportVariables.ItemsSource = this.reportVariables;
         TxtMemorandumTemplate.Text = "<b>{CompanyName}</b>";
+        DpReportingVersionValidFrom.SelectedDate = DateTime.Today;
         ApplyTablixStyle(new TablixStyleConfig());
         InitializeTemplateContextMenus();
         UpdateReportSummaryColumnVisibility();
+        SetMainDatasetSourceMode(MainDatasetSourceMode.StoredProcedure);
         GridReportParameters.RowEditEnding += GridReportParameters_RowEditEnding;
         GridReportVariables.CurrentCellChanged += GridReportVariables_CurrentCellChanged;
         this.Closed += OnClosed;
@@ -149,6 +165,12 @@ public partial class ReportSetupDialog : Window
     private void ConnectionButton_Click(object sender, RoutedEventArgs e)
         => _ = SelectConnectionAsync();
 
+    private void ReportingConnectionButton_Click(object sender, RoutedEventArgs e)
+        => _ = SelectReportingConnectionAsync();
+
+    /// <summary>
+    /// Lets the user select a connection and refreshes source metadata when stored procedure mode is active.
+    /// </summary>
     private async Task SelectConnectionAsync()
     {
         try
@@ -178,7 +200,10 @@ public partial class ReportSetupDialog : Window
                 UpdateStoredProcedureParameterChoices([]);
                 LblMetadataStatus.Text = string.Empty;
 
-                await LoadProceduresAsync();
+                if (ReadMainDatasetSourceMode() == MainDatasetSourceMode.StoredProcedure)
+                {
+                    await LoadProceduresAsync();
+                }
             }
         }
         catch (Exception ex)
@@ -187,8 +212,72 @@ public partial class ReportSetupDialog : Window
         }
     }
 
+    /// <summary>
+    /// Lets the user select the Reporting database connection used by migration script generation.
+    /// </summary>
+    private async Task SelectReportingConnectionAsync()
+    {
+        try
+        {
+            var dialog = new DatabaseConnectionDialog(this.solutionDirectory, TxtReportingConnectionString.Text.Trim())
+            {
+                Owner = this,
+                ShowActivated = true
+            };
+            DialogThemeService.ApplyFromOwner(dialog, this);
+
+            dialog.SourceInitialized += (_, _) =>
+            {
+                dialog.Activate();
+                dialog.Topmost = true;
+                dialog.Topmost = false;
+                dialog.Focus();
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                TxtReportingConnectionString.Text = dialog.ConnectionString;
+                await TestReportingConnectionAsync(showSuccess: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not open reporting connection dialog:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private void LoadProceduresButton_Click(object sender, RoutedEventArgs e)
         => _ = LoadProceduresAsync();
+
+    /// <summary>
+    /// Updates the Main dataset controls when the source mode changes.
+    /// </summary>
+    private void MainDatasetSource_Changed(object sender, SelectionChangedEventArgs e)
+        => UpdateMainDatasetSourceModeUi();
+
+    /// <summary>
+    /// Opens the SQL editor used for the main SQL text dataset command.
+    /// </summary>
+    private void EditMainSqlButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new SqlEditorDialog(
+            "Main dataset SQL",
+            this.mainDatasetSqlText,
+            "Enter the T-SQL command for dsMain. Use @ParameterName for report parameters; locally DECLARE-d variables are ignored during Inspect.")
+        {
+            Owner = this
+        };
+        DialogThemeService.ApplyFromOwner(dialog, this);
+
+        if (dialog.ShowDialog() == true)
+        {
+            this.mainDatasetSqlText = dialog.SqlText;
+            this.currentMetadata = null;
+            LblMetadataStatus.Text = string.IsNullOrWhiteSpace(this.mainDatasetSqlText)
+                ? "SQL text is empty."
+                : "SQL text updated. Run Inspect to refresh params and columns.";
+        }
+    }
 
     private async Task LoadProceduresAsync()
     {
@@ -221,7 +310,7 @@ public partial class ReportSetupDialog : Window
     }
 
     private void InspectProcedureButton_Click(object sender, RoutedEventArgs e)
-        => _ = InspectProcedureAsync();
+        => _ = InspectMainDatasetAsync();
 
     private void SuggestColumnsButton_Click(object sender, RoutedEventArgs e)
         => _ = SuggestColumnsAsync();
@@ -387,6 +476,339 @@ public partial class ReportSetupDialog : Window
         }
     }
 
+    private void TestReportingConnectionButton_Click(object sender, RoutedEventArgs e)
+        => _ = TestReportingConnectionAsync(showSuccess: true);
+
+    private void PreviewReportingMigrationSqlButton_Click(object sender, RoutedEventArgs e)
+        => PreviewReportingMigrationSql();
+
+    private void SaveReportingMigrationSqlButton_Click(object sender, RoutedEventArgs e)
+        => SaveReportingMigrationSql();
+
+    private void ExecuteReportingMigrationSqlButton_Click(object sender, RoutedEventArgs e)
+        => _ = ExecuteReportingMigrationSqlAsync();
+
+    private void PreviewReportingSchemaSqlButton_Click(object sender, RoutedEventArgs e)
+        => PreviewReportingSchemaSql();
+
+    private void InstallReportingSchemaButton_Click(object sender, RoutedEventArgs e)
+        => _ = InstallReportingSchemaAsync();
+
+    /// <summary>
+    /// Opens a folder picker for the Flyway migration folder used by Reporting metadata scripts.
+    /// </summary>
+    private void BrowseReportingMigrationFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var dialog = new OpenFolderDialog
+            {
+                Title = "Select Flyway migration folder",
+                Multiselect = false
+            };
+
+            if (Directory.Exists(TxtReportingMigrationFolder.Text?.Trim()))
+            {
+                dialog.FolderName = TxtReportingMigrationFolder.Text.Trim();
+            }
+            else if (Directory.Exists(this.solutionDirectory))
+            {
+                dialog.FolderName = this.solutionDirectory;
+            }
+
+            if (dialog.ShowDialog(this) == true)
+            {
+                TxtReportingMigrationFolder.Text = dialog.FolderName;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not choose migration folder:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Verifies that the configured Reporting metadata connection can be opened.
+    /// </summary>
+    private async Task TestReportingConnectionAsync(bool showSuccess)
+    {
+        var connectionString = TxtReportingConnectionString.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            MessageBox.Show(this, "Reporting connection string is required.", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(this.cts.Token);
+
+            if (showSuccess)
+            {
+                MessageBox.Show(this, "Reporting connection is valid.", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not connect to Reporting database:\n\n{ex.Message}", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Opens a read/write preview window with the generated Reporting metadata migration SQL.
+    /// </summary>
+    private void PreviewReportingMigrationSql()
+    {
+        try
+        {
+            var sql = BuildReportingMigrationSqlFromCurrentState();
+            var dialog = new SqlEditorDialog(
+                "Reporting metadata migration SQL",
+                sql,
+                "Review the generated idempotent SQL before saving it as a Flyway migration. This preview does not execute the script.")
+            {
+                Owner = this
+            };
+            DialogThemeService.ApplyFromOwner(dialog, this);
+            dialog.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not build reporting migration SQL:\n\n{ex.Message}", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Writes the generated Reporting metadata migration SQL to the selected Flyway folder.
+    /// </summary>
+    private void SaveReportingMigrationSql()
+    {
+        try
+        {
+            var folder = TxtReportingMigrationFolder.Text?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(folder))
+            {
+                MessageBox.Show(this, "Migration folder is required.", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (!Directory.Exists(folder))
+            {
+                MessageBox.Show(this, "Migration folder does not exist.", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var model = BuildReportModelFromCurrentState();
+            var sql = ReportingMigrationSqlBuilder.Build(model);
+            var fileName = ReportingMigrationSqlBuilder.BuildFileName(model, DateTime.Now);
+            var path = Path.Combine(folder, fileName);
+            File.WriteAllText(path, sql, Encoding.UTF8);
+
+            MessageBox.Show(this, $"Reporting migration SQL saved:\n\n{path}", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not save reporting migration SQL:\n\n{ex.Message}", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Builds Reporting metadata migration SQL from the current dialog state.
+    /// </summary>
+    private string BuildReportingMigrationSqlFromCurrentState()
+        => ReportingMigrationSqlBuilder.Build(BuildReportModelFromCurrentState());
+
+    /// <summary>
+    /// Executes the generated Reporting metadata SQL against the selected development database.
+    /// </summary>
+    private async Task ExecuteReportingMigrationSqlAsync()
+    {
+        var connectionString = TxtReportingConnectionString.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            MessageBox.Show(this, "Reporting connection string is required.", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(this.cts.Token);
+
+            if (!await ReportingSchemaExistsAsync(connection))
+            {
+                MessageBox.Show(this, "Reporting schema does not exist in the selected database. Install the schema first or choose another Reporting connection.", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var confirmation = MessageBox.Show(
+                this,
+                "This will execute the generated report metadata SQL directly on the selected database. Use this only for development databases. Continue?",
+                "Execute Reporting metadata SQL",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirmation != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            var sql = BuildReportingMigrationSqlFromCurrentState();
+            var executedBatches = await ExecuteSqlBatchesAsync(connection, sql);
+            MessageBox.Show(this, $"Reporting metadata SQL executed successfully.\n\nBatches executed: {executedBatches}", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not execute reporting metadata SQL:\n\n{ex.Message}", "Reporting metadata", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Opens the bundled Reporting schema bootstrap script for review without executing it.
+    /// </summary>
+    private void PreviewReportingSchemaSql()
+    {
+        try
+        {
+            var sql = LoadReportingSchemaSql();
+            var dialog = new SqlEditorDialog(
+                "Reporting schema bootstrap SQL",
+                sql,
+                "Review the bundled Reporting schema script. The install action can run it only when the Reporting schema does not already exist.")
+            {
+                Owner = this
+            };
+            DialogThemeService.ApplyFromOwner(dialog, this);
+            dialog.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not load Reporting schema SQL:\n\n{ex.Message}", "Reporting schema", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Installs the bundled Reporting schema script only when the target database has no Reporting schema.
+    /// </summary>
+    private async Task InstallReportingSchemaAsync()
+    {
+        var connectionString = TxtReportingConnectionString.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            MessageBox.Show(this, "Reporting connection string is required.", "Reporting schema", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync(this.cts.Token);
+
+            if (await ReportingSchemaExistsAsync(connection))
+            {
+                MessageBox.Show(this, "Reporting schema already exists. Bootstrap install is allowed only on an empty target database without the Reporting schema.", "Reporting schema", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var confirmation = MessageBox.Show(
+                this,
+                "This will create the Reporting schema and its base tables in the selected database. Continue?",
+                "Install Reporting schema",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (confirmation != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            var sql = LoadReportingSchemaSql();
+            await ExecuteSqlBatchesAsync(connection, sql);
+
+            MessageBox.Show(this, "Reporting schema installed successfully.", "Reporting schema", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not install Reporting schema:\n\n{ex.Message}", "Reporting schema", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Checks whether the target database already contains the Reporting schema.
+    /// </summary>
+    private static async Task<bool> ReportingSchemaExistsAsync(SqlConnection connection)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT CASE WHEN SCHEMA_ID(N'Reporting') IS NULL THEN 0 ELSE 1 END";
+        var result = await command.ExecuteScalarAsync();
+        return Convert.ToInt32(result, CultureInfo.InvariantCulture) == 1;
+    }
+
+    /// <summary>
+    /// Executes a SQL script batch-by-batch using the dialog cancellation token.
+    /// </summary>
+    private async Task<int> ExecuteSqlBatchesAsync(SqlConnection connection, string sql)
+    {
+        var executedBatches = 0;
+        foreach (var batch in SplitSqlBatches(sql))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandTimeout = 0;
+            command.CommandText = batch;
+            await command.ExecuteNonQueryAsync(this.cts.Token);
+            executedBatches++;
+        }
+
+        return executedBatches;
+    }
+
+    /// <summary>
+    /// Loads the Reporting schema bootstrap script from copied output files or embedded resources.
+    /// </summary>
+    private static string LoadReportingSchemaSql()
+    {
+        var outputPath = Path.Combine(AppContext.BaseDirectory, "Database", "Reporting_Core_Model.sql");
+        if (File.Exists(outputPath))
+        {
+            return File.ReadAllText(outputPath, Encoding.UTF8);
+        }
+
+        using var stream = typeof(ReportSetupDialog).Assembly.GetManifestResourceStream(ReportingSchemaSqlResourceName);
+        if (stream is null)
+        {
+            throw new FileNotFoundException("Reporting_Core_Model.sql was not found next to the extension binaries or embedded in the extension assembly.");
+        }
+
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return reader.ReadToEnd();
+    }
+
+    /// <summary>
+    /// Splits a SQL script into executable batches separated by standalone GO lines.
+    /// </summary>
+    private static IReadOnlyList<string> SplitSqlBatches(string sql)
+    {
+        var batches = new List<string>();
+        var start = 0;
+        foreach (Match match in SqlGoBatchRegex.Matches(sql))
+        {
+            var batch = sql[start..match.Index].Trim();
+            if (!string.IsNullOrWhiteSpace(batch))
+            {
+                batches.Add(batch);
+            }
+
+            start = match.Index + match.Length;
+        }
+
+        var lastBatch = sql[start..].Trim();
+        if (!string.IsNullOrWhiteSpace(lastBatch))
+        {
+            batches.Add(lastBatch);
+        }
+
+        return batches;
+    }
+
     private void BrowseFooterLogoButton_Click(object sender, RoutedEventArgs e)
         => BrowseImagePath(TxtFooterLogo, "Select footer logo", "Could not choose footer logo");
 
@@ -537,6 +959,289 @@ public partial class ReportSetupDialog : Window
         }
     }
 
+    /// <summary>
+    /// Applies reusable parameter definitions from the Reporting schema to matching grid rows.
+    /// </summary>
+    private void ApplyParameterDefinitionsButton_Click(object sender, RoutedEventArgs e)
+        => _ = ApplyParameterDefinitionsAsync();
+
+    /// <summary>
+    /// Opens a picker for copying parameters from another report version.
+    /// </summary>
+    private void LoadReportParametersButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        var connectionString = TxtReportingConnectionString.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            MessageBox.Show(this, "Set the Reporting connection on the Output tab first.", "Load params from report", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new ImportReportParametersDialog(connectionString, this.reportingMetadataReader)
+        {
+            Owner = this
+        };
+        DialogThemeService.ApplyFromOwner(dialog, this);
+
+        if (dialog.ShowDialog() == true)
+        {
+            ImportReportParameters(dialog.SelectedParameters, dialog.UpdateExistingParameters);
+        }
+    }
+
+    /// <summary>
+    /// Adds selected imported parameters and optionally refreshes matching existing rows.
+    /// </summary>
+    private void ImportReportParameters(IEnumerable<ReportingParameterImportCandidate> importedParameters, bool updateExisting)
+    {
+        var selectedParameters = importedParameters
+            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
+            .OrderBy(parameter => parameter.CreationOrder <= 0 ? int.MaxValue : parameter.CreationOrder)
+            .ThenBy(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (selectedParameters.Count == 0)
+        {
+            return;
+        }
+
+        var existingByName = this.reportParameters
+            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
+            .GroupBy(parameter => NormalizeParameterNameForLookup(parameter.Name), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var availableNames = existingByName.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var parameter in selectedParameters)
+        {
+            availableNames.Add(NormalizeParameterNameForLookup(parameter.Name));
+        }
+
+        var addedCount = 0;
+        var updatedCount = 0;
+        var skippedCount = 0;
+        var nextOrdinal = this.reportParameters.Count == 0
+            ? 1
+            : this.reportParameters.Max(parameter => parameter.OrdinalNumber) + 1;
+
+        foreach (var importedParameter in selectedParameters)
+        {
+            var key = NormalizeParameterNameForLookup(importedParameter.Name);
+            if (existingByName.TryGetValue(key, out var existingParameter))
+            {
+                if (!updateExisting)
+                {
+                    skippedCount++;
+                    continue;
+                }
+
+                ApplyImportedReportParameter(existingParameter, importedParameter, availableNames, keepOrdinal: true);
+                updatedCount++;
+                continue;
+            }
+
+            var newParameter = new ReportParameter
+            {
+                OrdinalNumber = importedParameter.CreationOrder > 0 ? importedParameter.CreationOrder : nextOrdinal++
+            };
+            ApplyImportedReportParameter(newParameter, importedParameter, availableNames, keepOrdinal: false);
+            this.reportParameters.Add(newParameter);
+            existingByName[key] = newParameter;
+            addedCount++;
+        }
+
+        SortReportParametersByOrdinal();
+        GridReportParameters.Items.Refresh();
+        MessageBox.Show(
+            this,
+            $"Added {addedCount}, updated {updatedCount}, skipped {skippedCount} existing parameter(s).",
+            "Load params from report",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+    }
+
+    /// <summary>
+    /// Copies one imported runtime parameter onto a grid parameter.
+    /// </summary>
+    private static void ApplyImportedReportParameter(
+        ReportParameter target,
+        ReportingParameterImportCandidate source,
+        ISet<string> availableParameterNames,
+        bool keepOrdinal)
+    {
+        if (!keepOrdinal)
+        {
+            target.OrdinalNumber = source.CreationOrder > 0 ? source.CreationOrder : target.OrdinalNumber;
+        }
+
+        target.Name = NormalizeParameterNameForLookup(source.Name);
+        target.Prompt = string.IsNullOrWhiteSpace(source.Label) ? target.Name : source.Label.Trim();
+        target.ControlType = MapReportingComponentType(source.ComponentTypeName);
+        target.MultiValue = target.ControlType == ControlType.MultiSelect;
+        target.Nullable = target.MultiValue ? false : !source.IsRequired;
+        target.IsVisible = source.IsVisible;
+        target.EntityKey = NormalizeOptional(source.EntityKey ?? string.Empty);
+        target.ValueFieldTemplate = NormalizeOptional(source.ValueFieldTemplate ?? string.Empty);
+        target.DisplayFieldTemplate = NormalizeOptional(source.DisplayFieldTemplate ?? string.Empty);
+        target.DefaultValueExpression = NormalizeOptional(source.InitialValue ?? string.Empty);
+        target.StaticValidValues = CloneStaticValidValues(source.StaticValidValues);
+        target.RuntimeSettings = CloneRuntimeSettings(source.RuntimeSettings);
+
+        ApplyImportedDependencies(target, source.Dependencies, availableParameterNames);
+
+        if (string.IsNullOrWhiteSpace(target.SqlTypeName))
+        {
+            target.SqlTypeName = "nvarchar";
+        }
+    }
+
+    /// <summary>
+    /// Copies import dependency rows into the current grid fields when referenced parameters are available.
+    /// </summary>
+    private static void ApplyImportedDependencies(
+        ReportParameter target,
+        IEnumerable<ReportingParameterImportDependency> dependencies,
+        ISet<string> availableParameterNames)
+    {
+        var filterDependencies = new List<string>();
+        foreach (var dependency in dependencies)
+        {
+            var dependsOnName = NormalizeParameterNameForLookup(dependency.DependsOnParameterName);
+            if (string.IsNullOrWhiteSpace(dependsOnName) || !availableParameterNames.Contains(dependsOnName))
+            {
+                continue;
+            }
+
+            if (dependency.CompareParams)
+            {
+                target.CompareToParameterName = dependsOnName;
+                target.CompareOperator = NormalizeOptional(dependency.CompareOperator ?? string.Empty);
+                continue;
+            }
+
+            filterDependencies.Add(dependsOnName);
+            if (string.IsNullOrWhiteSpace(target.DependencyFilterPath))
+            {
+                target.DependencyFilterPath = NormalizeOptional(dependency.DependencyFilterPath ?? string.Empty);
+            }
+        }
+
+        target.DependsOnParameterName = filterDependencies.Count == 0 ? null : string.Join(", ", filterDependencies.Distinct(StringComparer.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(target.CompareToParameterName))
+        {
+            target.CompareOperator = null;
+        }
+    }
+
+    /// <summary>
+    /// Clones static values so imported rows do not share mutable list items with the dialog.
+    /// </summary>
+    private static List<StaticValidValue> CloneStaticValidValues(IEnumerable<StaticValidValue> values)
+        => values.Select(value => new StaticValidValue
+        {
+            Value = value.Value,
+            Label = value.Label
+        }).ToList();
+
+    /// <summary>
+    /// Clones runtime settings so imported rows do not share mutable list items with the dialog.
+    /// </summary>
+    private static List<ParameterValidatorValue> CloneRuntimeSettings(IEnumerable<ParameterValidatorValue> values)
+        => values.Select(value => new ParameterValidatorValue
+        {
+            Code = value.Code,
+            Value = value.Value,
+            ValueType = value.ValueType,
+            Kind = value.Kind,
+            SortOrder = value.SortOrder,
+            IsEnabled = value.IsEnabled
+        }).ToList();
+
+    /// <summary>
+    /// Loads Reporting.ParameterDefinition rows and applies matches to the current report parameters.
+    /// </summary>
+    private async Task ApplyParameterDefinitionsAsync()
+    {
+        CommitPendingGridEdits();
+
+        var connectionString = TxtReportingConnectionString.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            MessageBox.Show(this, "Set the Reporting connection on the Output tab first.", "Apply definitions", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var currentParameters = this.reportParameters
+            .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
+            .ToList();
+        if (currentParameters.Count == 0)
+        {
+            MessageBox.Show(this, "There are no report parameters to update.", "Apply definitions", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var definitions = await this.reportingMetadataReader.ReadParameterDefinitionsAsync(connectionString, this.cts.Token);
+            var appliedCount = 0;
+            var missingCount = 0;
+
+            foreach (var parameter in currentParameters)
+            {
+                var key = NormalizeParameterNameForLookup(parameter.Name);
+                if (!definitions.TryGetValue(key, out var definition))
+                {
+                    missingCount++;
+                    continue;
+                }
+
+                ApplyReportingParameterDefinition(parameter, definition);
+                appliedCount++;
+            }
+
+            GridReportParameters.Items.Refresh();
+            MessageBox.Show(
+                this,
+                $"Applied {appliedCount} parameter definition(s). {missingCount} current parameter(s) were not found in Reporting.ParameterDefinition.",
+                "Apply definitions",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
+        {
+            MessageBox.Show(this, $"Could not read Reporting.ParameterDefinition rows.{Environment.NewLine}{ex.Message}", "Apply definitions", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Copies reusable definition metadata onto one report parameter while preserving report-specific settings.
+    /// </summary>
+    private static void ApplyReportingParameterDefinition(ReportParameter parameter, ReportingParameterDefinition definition)
+    {
+        parameter.Prompt = string.IsNullOrWhiteSpace(definition.Label) ? parameter.Prompt : definition.Label.Trim();
+        parameter.ControlType = MapReportingComponentType(definition.ComponentTypeName);
+        parameter.EntityKey = NormalizeOptional(definition.EntityKey ?? string.Empty);
+        parameter.ValueFieldTemplate = NormalizeOptional(definition.ValueFieldTemplate ?? string.Empty);
+        parameter.DisplayFieldTemplate = NormalizeOptional(definition.DisplayFieldTemplate ?? string.Empty);
+        parameter.DefaultValueExpression = NormalizeOptional(definition.InitialValue ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Maps Reporting.ComponentType names back to generator control types.
+    /// </summary>
+    private static ControlType MapReportingComponentType(string componentTypeName)
+        => componentTypeName.Trim() switch
+        {
+            "Checkbox" => ControlType.Boolean,
+            var value when Enum.TryParse<ControlType>(value, ignoreCase: true, out var controlType) => controlType,
+            _ => ControlType.Text
+        };
+
+    /// <summary>
+    /// Normalizes report parameter names before lookup against Reporting.ParameterDefinition.
+    /// </summary>
+    private static string NormalizeParameterNameForLookup(string? parameterName)
+        => string.IsNullOrWhiteSpace(parameterName) ? string.Empty : parameterName.Trim().TrimStart('@');
+
     private void EditStaticValuesButton_Click(object sender, RoutedEventArgs e)
     {
         CommitPendingGridEdits();
@@ -564,6 +1269,44 @@ public partial class ReportSetupDialog : Window
                 parameter.Lookup = null;
                 parameter.LookupSql = null;
             }
+
+            GridReportParameters.Items.Refresh();
+        }
+    }
+
+    /// <summary>
+    /// Opens the runtime settings editor for the current report parameter.
+    /// </summary>
+    private void EditValidatorsButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        if ((sender as FrameworkElement)?.DataContext is not ReportParameter parameter)
+        {
+            return;
+        }
+
+        var allowedValidators = this.validatorCatalog.GetAllowedValidators(parameter.ControlType);
+        if (allowedValidators.Count == 0)
+        {
+            MessageBox.Show(this, $"No runtime settings are configured for control type '{parameter.ControlType}'.", "Runtime settings", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new ParameterValidatorsDialog(
+            string.IsNullOrWhiteSpace(parameter.Name) ? "(new parameter)" : parameter.Name,
+            parameter.ControlType,
+            allowedValidators,
+            parameter.RuntimeSettings)
+        {
+            Owner = this
+        };
+        DialogThemeService.ApplyFromOwner(dialog, this);
+
+        if (dialog.ShowDialog() == true)
+        {
+            parameter.RuntimeSettings = dialog.RuntimeSettings;
+            GridReportParameters.Items.Refresh();
         }
     }
 
@@ -1206,6 +1949,23 @@ public partial class ReportSetupDialog : Window
         => (await this.sqlIntrospector.PreviewSqlAsync(TxtConnectionString.Text.Trim(), sql, this.cts.Token)).DefaultView;
 
 
+    /// <summary>
+    /// Inspects the selected main dataset source and refreshes dataset params and columns.
+    /// </summary>
+    private async Task InspectMainDatasetAsync()
+    {
+        if (ReadMainDatasetSourceMode() == MainDatasetSourceMode.SqlText)
+        {
+            await InspectSqlTextDatasetAsync();
+            return;
+        }
+
+        await InspectProcedureAsync();
+    }
+
+    /// <summary>
+    /// Inspects the selected stored procedure using the existing stored procedure metadata flow.
+    /// </summary>
     private async Task InspectProcedureAsync()
     {
         if (string.IsNullOrWhiteSpace(TxtConnectionString.Text))
@@ -1262,8 +2022,102 @@ public partial class ReportSetupDialog : Window
         }
     }
 
+    /// <summary>
+    /// Inspects raw SQL text and uses metadata/parser results to refresh report parameters and fields.
+    /// </summary>
+    private async Task InspectSqlTextDatasetAsync()
+    {
+        if (string.IsNullOrWhiteSpace(TxtConnectionString.Text))
+        {
+            MessageBox.Show(this, "Connection string is required.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var sqlText = ReadMainDatasetSqlText();
+        if (string.IsNullOrWhiteSpace(sqlText))
+        {
+            MessageBox.Show(this, "Enter SQL text first.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            Cursor = System.Windows.Input.Cursors.Wait;
+            LblMetadataStatus.Text = "Inspecting SQL text...";
+
+            var metadata = await this.sqlIntrospector
+                .ReadSqlTextDatasetAsync(TxtConnectionString.Text.Trim(), sqlText, this.cts.Token);
+            var sqlParameters = MergeSqlTextParameters(
+                metadata.Parameters,
+                this.sqlIntrospector.SuggestParametersFromSqlText(sqlText));
+
+            this.currentMetadata = null;
+            GridParameters.ItemsSource = sqlParameters;
+            UpdateStoredProcedureParameterChoices(sqlParameters);
+            this.fieldDrafts.Clear();
+            foreach (var field in metadata.Fields.Select(DatasetFieldDraft.FromDatasetField))
+            {
+                this.fieldDrafts.Add(field);
+            }
+
+            LblMetadataStatus.Text = metadata.ResultSetWarning
+                ?? $"Loaded {sqlParameters.Count} SQL parameter(s) and {metadata.Fields.Count} field(s).";
+
+            var displayMetadata = metadata with { Parameters = sqlParameters };
+            ApplyReportParameters(ReportModelFactory.FromSqlText(TxtReportName.Text, sqlText, displayMetadata).Parameters);
+            AutoBindReportParametersToStoredProcedureParameters(sqlParameters);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not inspect SQL text:\n\n{ex.Message}", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            Cursor = null;
+        }
+    }
+
+    /// <summary>
+    /// Merges SQL Server and parser-discovered SQL text parameters for display and binding.
+    /// </summary>
+    private static IReadOnlyList<SpParameter> MergeSqlTextParameters(
+        IReadOnlyList<SpParameter> metadataParameters,
+        IReadOnlyList<SpParameter> parserParameters)
+    {
+        var merged = metadataParameters.ToList();
+        var knownNames = merged
+            .Select(parameter => parameter.Name.TrimStart('@'))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var parserParameter in parserParameters)
+        {
+            var normalizedName = parserParameter.Name.TrimStart('@');
+            if (string.IsNullOrWhiteSpace(normalizedName) || knownNames.Contains(normalizedName))
+            {
+                continue;
+            }
+
+            merged.Add(parserParameter with { OrdinalPosition = merged.Count + 1 });
+            knownNames.Add(normalizedName);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// Suggests main dataset columns using the selected source mode fallback strategy.
+    /// </summary>
     private async Task SuggestColumnsAsync()
     {
+        if (ReadMainDatasetSourceMode() == MainDatasetSourceMode.SqlText)
+        {
+            SuggestColumnsFromSqlText();
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(TxtConnectionString.Text))
         {
             MessageBox.Show(this, "Connection string is required.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1312,6 +2166,43 @@ public partial class ReportSetupDialog : Window
         }
     }
 
+    /// <summary>
+    /// Suggests columns for SQL text mode without executing the SQL.
+    /// </summary>
+    private void SuggestColumnsFromSqlText()
+    {
+        var sqlText = ReadMainDatasetSqlText();
+        if (string.IsNullOrWhiteSpace(sqlText))
+        {
+            MessageBox.Show(this, "Enter SQL text first.", "sp2rdlGenExtension", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var result = this.sqlIntrospector.SuggestFieldsFromSqlText(sqlText);
+        if (result.Warning is not null)
+        {
+            LblMetadataStatus.Text = result.Warning;
+            return;
+        }
+
+        if (result.Fields.Count == 0)
+        {
+            LblMetadataStatus.Text = "No columns could be suggested from SQL text.";
+            return;
+        }
+
+        this.fieldDrafts.Clear();
+        foreach (var field in result.Fields.Select(DatasetFieldDraft.FromDatasetField))
+        {
+            this.fieldDrafts.Add(field);
+        }
+
+        LblMetadataStatus.Text = $"Suggested {result.Fields.Count} column(s) from SQL text. Review SQL types before saving.";
+    }
+
+    /// <summary>
+    /// Generates the report from the current dialog state and records the request snapshot.
+    /// </summary>
     private void GenerateButton_Click(object sender, RoutedEventArgs e)
     {
         if (!ValidateOutputPathBeforeGenerate())
@@ -1326,7 +2217,7 @@ public partial class ReportSetupDialog : Window
         Request = new ReportGenerationRequest
         {
             ConnectionString = TxtConnectionString.Text.Trim(),
-            StoredProcedureName = ReadStoredProcedureName(),
+            StoredProcedureName = ReadMainDatasetSourceMode() == MainDatasetSourceMode.StoredProcedure ? ReadStoredProcedureName() : string.Empty,
             OutputPath = outputPath,
             ReportModel = reportModel
         };
@@ -1455,9 +2346,60 @@ public partial class ReportSetupDialog : Window
             : ReportPurpose.MainReport;
     }
 
+    /// <summary>
+    /// Reads the selected main dataset source mode from the dialog.
+    /// </summary>
+    private MainDatasetSourceMode ReadMainDatasetSourceMode()
+    {
+        var tag = (CmbMainDatasetSource.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return string.Equals(tag, nameof(CommandKind.Text), StringComparison.OrdinalIgnoreCase)
+            ? MainDatasetSourceMode.SqlText
+            : MainDatasetSourceMode.StoredProcedure;
+    }
+
+    /// <summary>
+    /// Selects the requested main dataset source mode in the dialog.
+    /// </summary>
+    private void SetMainDatasetSourceMode(MainDatasetSourceMode mode)
+    {
+        var tag = mode == MainDatasetSourceMode.SqlText
+            ? nameof(CommandKind.Text)
+            : nameof(CommandKind.StoredProcedure);
+        SetComboBoxByTag(CmbMainDatasetSource, tag);
+        UpdateMainDatasetSourceModeUi();
+    }
+
+    /// <summary>
+    /// Shows only the controls that belong to the selected main dataset source mode.
+    /// </summary>
+    private void UpdateMainDatasetSourceModeUi()
+    {
+        if (CmbMainDatasetSource is null || BtnEditMainSql is null)
+        {
+            return;
+        }
+
+        var sqlMode = ReadMainDatasetSourceMode() == MainDatasetSourceMode.SqlText;
+        LblStoredProcedure.Text = sqlMode ? "SQL text:" : "Procedure:";
+        CmbStoredProcedure.Visibility = sqlMode ? Visibility.Collapsed : Visibility.Visible;
+        BtnLoadProcedures.Visibility = sqlMode ? Visibility.Collapsed : Visibility.Visible;
+        BtnEditMainSql.Visibility = sqlMode ? Visibility.Visible : Visibility.Collapsed;
+        LblDatasetParametersHeader.Text = sqlMode ? "SQL params" : "Stored procedure params";
+        LblDatasetColumnsHeader.Text = sqlMode ? "SQL columns" : "Stored procedure columns";
+    }
+
+    /// <summary>
+    /// Returns the SQL text currently configured for the main dataset.
+    /// </summary>
+    private string ReadMainDatasetSqlText()
+        => this.mainDatasetSqlText.Trim();
+
+    /// <summary>
+    /// Builds stored procedure metadata from edited fields when the dialog is in stored procedure mode.
+    /// </summary>
     private StoredProcedureMetadata? BuildCurrentMetadata()
     {
-        if (this.currentMetadata is null)
+        if (ReadMainDatasetSourceMode() == MainDatasetSourceMode.SqlText || this.currentMetadata is null)
         {
             return null;
         }
@@ -1474,6 +2416,9 @@ public partial class ReportSetupDialog : Window
         return this.currentMetadata with { Fields = fields };
     }
 
+    /// <summary>
+    /// Builds the persisted report model from the current UI, branching by stored procedure or SQL text mode.
+    /// </summary>
     private ReportModel BuildReportModelFromCurrentState()
     {
         // This method is the single UI -> model boundary. Keeping persistence
@@ -1492,8 +2437,13 @@ public partial class ReportSetupDialog : Window
         reportModel.OutputMode = ReadOutputMode();
         reportModel.Purpose = ReadReportPurpose();
         reportModel.SourceConnectionString = NormalizeOptional(TxtConnectionString.Text);
-        reportModel.SourceStoredProcedureName = ReadStoredProcedureName();
+        reportModel.SourceStoredProcedureName = ReadMainDatasetSourceMode() == MainDatasetSourceMode.StoredProcedure
+            ? ReadStoredProcedureName()
+            : null;
         reportModel.OutputPath = NormalizeOptional(TxtOutputPath.Text);
+        reportModel.ReportingConnectionString = NormalizeOptional(TxtReportingConnectionString.Text);
+        reportModel.ReportingVersionValidFrom = DpReportingVersionValidFrom.SelectedDate?.Date;
+        reportModel.ReportingMigrationFolder = NormalizeOptional(TxtReportingMigrationFolder.Text);
         reportModel.BaseFontFamily = ReadBaseFontFamily();
         reportModel.ReportTitle.Enabled = ChkReportTitleEnabled.IsChecked == true;
         reportModel.ReportTitle.Text = string.IsNullOrWhiteSpace(TxtReportTitle.Text)
@@ -1569,9 +2519,15 @@ public partial class ReportSetupDialog : Window
         return reportModel;
     }
 
+    /// <summary>
+    /// Builds a minimal report model when no fresh dataset metadata is available.
+    /// </summary>
     private ReportModel BuildReportModelWithoutMetadata()
     {
-        var storedProcedureName = ReadStoredProcedureName();
+        var sourceMode = ReadMainDatasetSourceMode();
+        var command = sourceMode == MainDatasetSourceMode.SqlText
+            ? ReadMainDatasetSqlText()
+            : ReadStoredProcedureName();
         var fields = this.fieldDrafts
             .Where(field => !string.IsNullOrWhiteSpace(field.Name))
             .Select((field, index) =>
@@ -1584,8 +2540,8 @@ public partial class ReportSetupDialog : Window
         var dataset = new DatasetConfig
         {
             Name = "dsMain",
-            Command = storedProcedureName,
-            CommandKind = CommandKind.StoredProcedure,
+            Command = command,
+            CommandKind = sourceMode == MainDatasetSourceMode.SqlText ? CommandKind.Text : CommandKind.StoredProcedure,
             Fields = fields
         };
 
@@ -1593,11 +2549,14 @@ public partial class ReportSetupDialog : Window
         {
             Name = TxtReportName.Text.Trim(),
             MainDatasetName = dataset.Name,
-            Datasets = string.IsNullOrWhiteSpace(storedProcedureName) && fields.Count == 0 ? [] : [dataset],
+            Datasets = string.IsNullOrWhiteSpace(command) && fields.Count == 0 ? [] : [dataset],
             Parameters = BuildReportParametersFromGrid()
         };
     }
 
+    /// <summary>
+    /// Applies a saved report model to the dialog and restores the correct main dataset source mode.
+    /// </summary>
     private void ApplyReportModel(ReportModel model)
     {
         // This is the inverse model -> UI boundary used by Load state and by the
@@ -1607,6 +2566,9 @@ public partial class ReportSetupDialog : Window
         TxtDescription.Text = model.Description ?? string.Empty;
         TxtConnectionString.Text = model.SourceConnectionString ?? string.Empty;
         TxtOutputPath.Text = model.OutputPath ?? string.Empty;
+        TxtReportingConnectionString.Text = model.ReportingConnectionString ?? string.Empty;
+        DpReportingVersionValidFrom.SelectedDate = model.ReportingVersionValidFrom?.Date ?? DateTime.Today;
+        TxtReportingMigrationFolder.Text = model.ReportingMigrationFolder ?? string.Empty;
         TxtReportTitle.Text = model.ReportTitle.Text;
         ChkReportTitleEnabled.IsChecked = model.ReportTitle.Enabled;
         TxtCompanyName.Text = model.CompanyInfo.Text;
@@ -1660,14 +2622,23 @@ public partial class ReportSetupDialog : Window
         SetReportPurpose(model.Purpose);
         ApplyPageSetup(model.PageSetup);
 
-        CmbStoredProcedure.ItemsSource = null;
-        CmbStoredProcedure.Text = model.SourceStoredProcedureName
-            ?? model.Datasets.FirstOrDefault(dataset => dataset.Name == model.MainDatasetName)?.Command
-            ?? model.Datasets.FirstOrDefault()?.Command
-            ?? string.Empty;
-
         var mainDataset = model.Datasets.FirstOrDefault(dataset => dataset.Name == model.MainDatasetName)
             ?? model.Datasets.FirstOrDefault();
+        var sqlMode = mainDataset?.CommandKind == CommandKind.Text;
+        SetMainDatasetSourceMode(sqlMode ? MainDatasetSourceMode.SqlText : MainDatasetSourceMode.StoredProcedure);
+        CmbStoredProcedure.ItemsSource = null;
+        if (sqlMode)
+        {
+            this.mainDatasetSqlText = mainDataset?.Command ?? string.Empty;
+            CmbStoredProcedure.Text = string.Empty;
+        }
+        else
+        {
+            this.mainDatasetSqlText = string.Empty;
+            CmbStoredProcedure.Text = model.SourceStoredProcedureName
+                ?? mainDataset?.Command
+                ?? string.Empty;
+        }
 
         this.fieldDrafts.Clear();
         if (mainDataset is not null)
@@ -1682,7 +2653,7 @@ public partial class ReportSetupDialog : Window
         var spParameters = BuildStoredProcedureParametersFromModel(model, mainDataset);
         GridParameters.ItemsSource = spParameters;
 
-        this.currentMetadata = mainDataset is null
+        this.currentMetadata = mainDataset is null || sqlMode
             ? null
             : new StoredProcedureMetadata(
                 ParseSchemaName(CmbStoredProcedure.Text),
@@ -2266,12 +3237,16 @@ WHEN NOT MATCHED THEN
             : Path.GetFileNameWithoutExtension(value);
     }
 
+    /// <summary>
+    /// Replaces the report parameter grid rows and normalizes runtime metadata for display.
+    /// </summary>
     private void ApplyReportParameters(IEnumerable<ReportParameter> parameters)
     {
         this.reportParameters.Clear();
         foreach (var parameter in NormalizeParameterOrdinals(parameters))
         {
             parameter.BindToDatasetParameterName = NormalizeOptional(parameter.BindToDatasetParameterName ?? string.Empty)?.TrimStart('@');
+            EnsureRuntimeParameterDefaults(parameter);
             this.reportParameters.Add(parameter);
         }
 
@@ -2355,6 +3330,9 @@ WHEN NOT MATCHED THEN
             .ToList();
     }
 
+    /// <summary>
+    /// Normalizes report parameter values before they are persisted or used for generation.
+    /// </summary>
     private static void NormalizeReportParameters(IEnumerable<ReportParameter> parameters)
     {
         var parameterList = parameters.ToList();
@@ -2375,6 +3353,7 @@ WHEN NOT MATCHED THEN
             parameter.DisplayFormat = NormalizeOptional(parameter.DisplayFormat ?? string.Empty);
             parameter.LookupSql = NormalizeOptional(parameter.LookupSql ?? string.Empty);
             parameter.DependsOnParameterName = NormalizeDependencyList(parameter.DependsOnParameterName, parameter.Name);
+            parameter.DependencyFilterPath = NormalizeOptional(parameter.DependencyFilterPath ?? string.Empty);
             parameter.BindToDatasetParameterName = NormalizeOptional(parameter.BindToDatasetParameterName ?? string.Empty)?.TrimStart('@');
             parameter.CompareToParameterName = NormalizeOptional(parameter.CompareToParameterName ?? string.Empty)?.TrimStart('@');
             parameter.CompareOperator = NormalizeOptional(parameter.CompareOperator ?? string.Empty);
@@ -2506,9 +3485,17 @@ WHEN NOT MATCHED THEN
         GridFields.Items.Refresh();
     }
 
+    /// <summary>
+    /// Commits the report parameter grid to an ordered list for persistence and generation.
+    /// </summary>
     private List<ReportParameter> BuildReportParametersFromGrid()
     {
         SortReportParametersByOrdinal();
+
+        foreach (var parameter in this.reportParameters)
+        {
+            EnsureRuntimeParameterDefaults(parameter);
+        }
 
         return this.reportParameters
             .Where(parameter => !string.IsNullOrWhiteSpace(parameter.Name))
@@ -2537,11 +3524,15 @@ WHEN NOT MATCHED THEN
 
     }
 
+    /// <summary>
+    /// Assigns missing ordinal values while preserving the existing parameter order.
+    /// </summary>
     private static IEnumerable<ReportParameter> NormalizeParameterOrdinals(IEnumerable<ReportParameter> parameters)
     {
         var ordinal = 1;
         foreach (var parameter in parameters)
         {
+            EnsureRuntimeParameterDefaults(parameter);
             if (parameter.OrdinalNumber <= 0)
             {
                 parameter.OrdinalNumber = ordinal;
@@ -2550,6 +3541,17 @@ WHEN NOT MATCHED THEN
             ordinal++;
             yield return parameter;
         }
+    }
+
+    /// <summary>
+    /// Normalizes runtime-only parameter metadata for grid display and JSON persistence.
+    /// </summary>
+    private static void EnsureRuntimeParameterDefaults(ReportParameter parameter)
+    {
+        parameter.EntityKey = NormalizeOptional(parameter.EntityKey ?? string.Empty);
+        parameter.ValueFieldTemplate = NormalizeOptional(parameter.ValueFieldTemplate ?? string.Empty);
+        parameter.DisplayFieldTemplate = NormalizeOptional(parameter.DisplayFieldTemplate ?? string.Empty);
+        parameter.DependencyFilterPath = NormalizeOptional(parameter.DependencyFilterPath ?? string.Empty);
     }
 
     private static void ApplyAuxiliaryParameterDatasets(ReportModel model)

@@ -62,9 +62,13 @@ Validira connection string, poziva `SqlIntrospector.ListStoredProceduresAsync` i
 
 Cita parametre i kolone stored procedure kroz `SqlIntrospector.ReadStoredProcedureAsync`, pravi inicijalni `ReportModel` kroz `ReportModelFactory` i puni UI.
 
+### `InspectSqlTextDatasetAsync`
+
+Cita parametre i kolone SQL text dataset-a kroz `SqlIntrospector.ReadSqlTextDatasetAsync`. Metoda ne kreira fake `StoredProcedureMetadata`; SQL mode se cuva kroz `DatasetConfig.CommandKind = Text`, a SQL tekst kroz `DatasetConfig.Command`.
+
 ### `SuggestColumnsAsync`
 
-Koristi tekst procedure i `SqlProcedureColumnSuggester` kao fallback kada SQL Server ne moze opisati prvi result set. Rezultat mijenja listu kolona u `Main dataset`.
+Grananje zavisi od `Main dataset` source-a. U stored procedure mode-u koristi tekst procedure i `SqlProcedureColumnSuggester` kao fallback kada SQL Server ne moze opisati prvi result set. U SQL text mode-u koristi `SqlTextAnalyzer` i trazi jedan finalni top-level result-producing `SELECT`.
 
 ### `SaveStateButton_Click` i `LoadStateAsync`
 
@@ -76,7 +80,7 @@ Najvaznija metoda u dialogu. Cita sve UI kontrole i gradi kompletan `ReportModel
 
 ### `ApplyReportModel`
 
-Suprotan smjer od `BuildReportModelFromCurrentState`. Prima model iz JSON-a ili introspekcije procedure i popunjava UI. Za svaku novu opciju dodatu u model treba dodati i apply logiku.
+Suprotan smjer od `BuildReportModelFromCurrentState`. Prima model iz JSON-a ili introspekcije procedure i popunjava UI. Za svaku novu opciju dodatu u model treba dodati i apply logiku. Main dataset source se obnavlja iz `mainDataset.CommandKind`; `CommandKind.Text` se ne smije prikazati kao naziv stored procedure.
 
 ### `BuildLookupAndDefaultDatasets`
 
@@ -104,9 +108,17 @@ Cita `sys.objects` i `sys.schemas` i vraca listu procedura sortiranu po shemi i 
 
 Parsirani naziv procedure koristi za citanje parametara i result kolona. Ako result kolone ne mogu biti procitane, metoda vraca warning i praznu listu polja, da korisnik moze nastaviti rucno.
 
+### `ReadSqlTextDatasetAsync`
+
+Cita metadata za raw SQL text bez izvrsavanja korisnickog SQL-a. Parametri se prvo citaju kroz `sys.sp_describe_undeclared_parameters`, a fallback je ScriptDom parser koji izbacuje lokalne `DECLARE` varijable. Kolone se prvo citaju kroz `sys.sp_describe_first_result_set`, a fallback je finalni top-level result `SELECT`.
+
 ### `SuggestFieldsFromProcedureTextAsync`
 
 Cita `OBJECT_DEFINITION` i salje tekst procedure u parser koji trazi najvjerovatniji zadnji `SELECT`.
+
+### `SuggestFieldsFromSqlText`
+
+Poziva neutralni SQL text parser. Parser automatski vraca kolone samo kada postoji jedan stvarni top-level result `SELECT`; ako ih ima vise, vraca warning i ne puni kolone automatski.
 
 ### `SuggestLookupSqlAsync`
 
@@ -123,6 +135,16 @@ Pravi pocetni `ReportModel` iz SQL metadata:
 - bindings iz SP parametara u report parametre,
 - report parametre sa promptom, tipom kontrole, formatom i ordinalom.
 
+### `FromSqlText`
+
+Pravi pocetni `ReportModel` za SQL text mode:
+
+- `dsMain` dataset,
+- `CommandKind.Text`,
+- SQL text kao `Command`,
+- bindings iz SQL parametara u report parametre,
+- report parametre sa promptom, tipom kontrole, formatom i ordinalom.
+
 ## ReportOutputWriter
 
 ### `Write`
@@ -132,6 +154,34 @@ Normalizuje ekstenziju po output mode-u, kreira folder, generise RDL, po potrebi
 ### `GetModelPath`
 
 Vraca putanju state fajla za dati RDL/RDLC.
+
+## Reporting metadata SQL
+
+### `ReportingMetadataReader`
+
+Cita `Reporting.ParameterDefinition` i povezani `Reporting.ComponentType` iz baze izabrane na `Output` tabu. `Apply definitions` na `Report params` tabu koristi ovaj reader da po imenu parametra primijeni globalne default vrijednosti na postojece redove, bez automatskog dodavanja novih report parametara.
+
+Isti reader cita `ReportVersion` listu i pripadajuce `UiParameter` redove za `Load from report...` tok. Import dijalog prikazuje checkbox listu parametara, a glavna forma dodaje nedostajuce redove ili, ako korisnik ukljuci update opciju, osvjezava postojece redove kompletnim runtime podesavanjima.
+
+### `ReportingMigrationSqlBuilder`
+
+Gradi Flyway SQL za runtime `Reporting` metadata tabele na osnovu trenutnog `ReportModel`. Koristi `MERGE` za report, definicije parametara, UI parametre i dependency zapise. `ReportVersion` se bira po paru `ReportId/ValidFrom`: ako verzija za taj datum postoji, koristi se ona; ako ne postoji, kreira se nova verzija sa narednim brojem.
+
+`Preview SQL`, `Save SQL` i `Execute SQL` koriste isti builder. `Execute SQL` dodatno provjerava da ciljna baza vec ima `Reporting` semu i zatim izvrsava generisane batch-eve direktno nad izabranom Reporting konekcijom.
+
+Kod `UiParameterDependency` redova `CompareOperatorId` se popunjava samo kada je `CompareParams = 1`. Za obicne filter/cascading dependency redove (`CompareParams = 0`) ostaje `NULL`; isto pravilo je zasticeno CHECK constraintom u Reporting modelu.
+
+`ReportValidatorCatalog` ucitava `config/report-validators.json` iz solution foldera, output foldera ili embedded defaulta. Config ima top-level `kinds` katalog dozvoljenih pripadnosti i listu runtime settings stavki. `ParameterValidatorsDialog` koristi katalog da za trenutni `ControlType` prikaze samo dozvoljene runtime settings. Stavke imaju `kind` (`validation`, `behavior`, `metadata`), pa se i metadata poput `defaultValue` cuva u istom toku. Izabrane vrijednosti se cuvaju u `ReportParameter.RuntimeSettings`, a builder ih serializuje u `UiParameter.RuntimeSettings`.
+
+Za `valueType = dateExpression` dialog prihvata `yyyy-MM-dd` ili relativne izraze: `today`, `startOfWeek`, `endOfWeek`, `startOfMonth`, `endOfMonth`, `startOfQuarter`, `endOfQuarter`, `startOfYear`, `endOfYear`, uz opcionalni offset `+/-N` i jedinicu `d/w/m/q/y`. Generator validira samo sintaksu; runtime aplikacija evaluira stvarni datum.
+
+### `Reporting_Core_Model.sql`
+
+Bootstrap skripta za pocetno kreiranje `Reporting` seme i osnovnih tabela. Ukljucena je u VSIX kao fajl i kao embedded fallback. `Install schema` na `Output` tabu smije je izvrsiti samo kada ciljna baza jos nema `Reporting` semu.
+
+Skripta dodatno obezbjedjuje `Localization.Language`: kreira `Localization` semu i `Language` tabelu ako nedostaju, seeduje osnovne jezike i dodaje `FK_ReportVersion_Language` sa `Reporting.ReportVersion.LanguageId` na `Localization.Language.Id`.
+
+`TR_ReportVersion_ClosePreviousIntervals` se izvrsava nakon inserta ili promjene `ReportId`/`LanguageId`/`ValidFrom` na verziji reporta. Za isti `ReportId` i `LanguageId` zatvara svaku postojecu verziju u ciji interval upada novi `ValidFrom`, tako sto `ValidTo` postavlja na dan prije novog `ValidFrom`.
 
 ## RdlBuilder
 
@@ -226,6 +276,7 @@ Lokalizacija staticnih labela u generisanom RDL-u je rijesena preko:
 - `Generation/LocalizationLabelCollector.cs` — sakuplja labele iz modela: `ReportTitle`, `GrandTotal`, `Subtotal`, `Column.{name}`, `Group.{name}`.
 - `Generation/LocalizationSeedSqlBuilder.cs` — emituje seed SQL kao `MERGE` blokove. Kada je `SkipKeysFromGeneralReport` ukljuceno i `GeneralReportId > 0`, source u MERGE-u dobije `WHERE NOT EXISTS` filter da se preskoce vec postojeci kljucevi pod opstim report-om.
 - `Generation/RdlBuilder.cs` (`BuildLocalizationLabelsSql`, `ApplyLocalization*`) — dodaje hidden parametre `ReportId`/`LanguageId`, `dsReportLabels` dataset i `Placeholder` ekspresije koje koriste prevode sa fallback-om na `GeneralReportId` pa na hardkodovan default.
+- `Generation/ReportOutputWriter.cs` — uz report i `.sp2rdl.json` moze snimiti i `*.translations.sql` kada je ukljucen `GenerateDefaultLanguageSeed`.
 
 ### Dugme „Register report"
 
@@ -234,7 +285,7 @@ Handler `LocalizationRegisterReportButton_Click` u `ReportSetupDialog.xaml.cs` (
 1. Otvara `SqlConnection` na trenutnu konekciju.
 2. Radi `MERGE` na `Report` tabeli (par `InternalName` = TxtReportName, `DisplayName` = TxtReportTitle, `ReportFileName` = `Path.GetFileName(OutputPath)`).
 3. Cita `ReportId` kroz `SELECT` nakon MERGE-a i upise u `TxtLocalizationReportId`.
-4. Ako je localization ukljuceno, poziva `MergeDefaultLanguageTranslationsAsync` koji za svaki sakupljeni `LocalizationLabel` izvrsi MERGE u tabelu prevoda. Ako je `skipIfExistsForGeneralReportId` postavljen, source koristi `WHERE NOT EXISTS` filter prema `GeneralReportId`.
+4. Ako je localization ukljuceno, poziva `MergeDefaultLanguageTranslationsAsync` koji za svaki sakupljeni `LocalizationLabel` izvrsi MERGE u tabelu prevoda. Postojeci zapis za isti `ReportId/LanguageId/Key` se azurira default vrijednoscu, a nedostajuci zapis se dodaje. Ako je `skipIfExistsForGeneralReportId` postavljen, source koristi `WHERE NOT EXISTS` filter prema `GeneralReportId`.
 
 ### Minimalne strukture tabela
 
@@ -268,4 +319,3 @@ Ucita JSON i vrati `ReportModel`. Ako deserijalizacija vrati null, baca jasnu gr
 4. Kod lookup i default datasetova drzati prefix `ds`.
 5. Data source naziv drzati sa prefixom `dsr`.
 6. Ako SQL Server introspekcija ne uspije, korisnik mora imati rucni fallback.
-
