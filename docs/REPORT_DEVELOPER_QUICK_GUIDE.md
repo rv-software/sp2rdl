@@ -73,9 +73,15 @@ Ako zelis grupisati report:
 
 1. Na koloni po kojoj grupises postavi `Group = 1`.
 2. Ako imas podgrupu, na drugoj koloni postavi `Group = 2`.
-3. Kolone koje su grupe se ne prikazuju u detail redu, vec idu u group header.
+3. U `Band oriented` layoutu kolone koje su grupe se ne prikazuju u detail redu, vec idu u group header.
 4. Na numerickim kolonama izaberi `Sum`, `Avg`, `Min`, `Max` ili `Count`.
 5. Na tekstualnim kolonama koristi uglavnom `Count` ili `CountDistinct`.
+
+Ako ti treba Excel-like analitika gdje group kolone ostaju lijevo u tabeli, na `Body / Tablix` izaberi `Grouping layout = Tabular horizontal`. Tada se group vrijednosti prikazuju samo na prvom detail redu grupe, dok se subtotal i grand total redovi i dalje generisu za agregirane kolone.
+
+Ako ti treba pravi crosstab/matrix, izaberi `Grouping layout = Matrix / Crosstab`. Na `Main dataset` kolonama oznaci redne grupe kao `Matrix role = RowGroup`, jednu kolonu koja se siri horizontalno kao `ColumnGroup`, i jednu numericku ili brojivu kolonu kao `Measure` sa agregacijom. Prva verzija podrzava vise row grupa, jednu column grupu i jednu measure kolonu, uz total po redovima, total po kolonama i grand total.
+
+Na `Body / Tablix` podesi `Matrix cols` na ocekivani broj dinamickih kolona. Taj broj se koristi za autosize da matrix stane u sirinu reporta zajedno sa total kolonom.
 
 Primjer:
 
@@ -114,7 +120,7 @@ OrganisationId  zavisi od MunicipalityId i binduje se na SP parametar @Organisat
 
 Za `Depends on` biraj samo parametre koji su prije trenutnog parametra. Zato je `Ordinal` vazan.
 
-Ako u Reporting bazi vec postoje ceste definicije parametara, npr. `RegionId`, `MunicipalityId` ili `OrganisationId`, prvo dodaj potrebne redove u `Report params`, zatim na `Output` tabu podesi `Reporting connection`, pa klikni `Apply definitions`. Generator ce po imenu parametra popuniti globalne default vrijednosti iz `Reporting.ParameterDefinition`, bez automatskog dodavanja novih redova.
+Ako u Reporting bazi vec postoje ceste definicije parametara, npr. `RegionId`, `MunicipalityId` ili `OrganisationId`, prvo dodaj potrebne redove u `Report params`, zatim na `Output` tabu podesi `Reporting connection`, pa klikni `Load definitions` ili `Apply definitions`. Kolona `Definition` bira globalni `ParameterDefinition.Name`, a kolona `Name` ostaje aktivno ime parametra za ovaj report. Ako definicija jos ne postoji, popuni prvi red do kraja i klikni `Save definition`; zatim dodaj drugi red, izaberi istu definiciju i promijeni samo `Name` i `Prompt`, npr. `MunicipalityFromId` / `Od opstine` i `MunicipalityToId` / `Do opstine`.
 
 Ako novi report treba gotovo iste runtime parametre kao neki raniji report, koristi `Load from report...`. Lista nudi samo trenutno aktivne verzije aktivnih reporta. Izaberi report verziju, oznaci parametre checkboxovima i po potrebi ukljuci `Update existing parameters` da se istoimeni redovi kompletno osvjeze. Bez tog checkboxa postojeci parametri ostaju netaknuti, a dodaju se samo nedostajuci.
 
@@ -125,6 +131,7 @@ Za runtime FE formu mozes popuniti i metadata polja:
 - `Value template`: vrijednost koja se salje bekendu; moze biti i kompozitni template.
 - `Display template`: tekst koji korisnik vidi u lookupu.
 - `Filter path`: posredno filtriranje, npr. kada izbor regije treba u pozadini filtrirati opstine prije prikaza skola.
+- `Compare template`: polje ili template za poredenje dropdown parametara, npr. `{PostalCode}` kada treba porediti opstine po postanskom broju umjesto po ID vrijednosti.
 
 Za runtime validaciju i runtime metadata klikni `Runtime settings...` na redu parametra. Dialog prikazuje samo stavke dozvoljene za izabrani `Control`, prema `config/report-validators.json`. Izabrane postavke i vrijednosti se cuvaju u state fajlu i u Reporting metadata SQL-u kao JSON u `UiParameter.RuntimeSettings`.
 

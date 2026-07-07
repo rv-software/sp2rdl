@@ -1,5 +1,13 @@
 namespace sp2rdlGenExtension.Model;
 
+internal enum MatrixFieldRole
+{
+    None,
+    RowGroup,
+    ColumnGroup,
+    Measure
+}
+
 internal sealed record DatasetField(
     string Name,
     string SqlTypeName,
@@ -10,4 +18,7 @@ internal sealed record DatasetField(
     string? AggregateFunction = null,
     bool IncludeInReport = true,
     string? TextAlign = null,
-    string? DefaultLabel = null);
+    string? DefaultLabel = null,
+    MatrixFieldRole MatrixRole = MatrixFieldRole.None,
+    int MatrixLevel = 0,
+    double WidthPercent = 0);

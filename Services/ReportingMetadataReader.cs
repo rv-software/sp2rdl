@@ -157,7 +157,8 @@ internal sealed class ReportingMetadataReader
             SELECT
                 UP.Id,
                 UP.CreationOrder,
-                PD.[Name],
+                COALESCE(NULLIF(UP.NameOverride, ''), PD.[Name]) AS [Name],
+                PD.[Name] AS DefinitionName,
                 COALESCE(UP.LabelOverride, PD.Label) AS Label,
                 CT.[Name] AS ComponentTypeName,
                 PD.EntityKey,
@@ -184,22 +185,23 @@ internal sealed class ReportingMetadataReader
         var parameters = new List<ReportingParameterImportCandidate>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            var staticValuesJson = await ReadNullableStringAsync(reader, 12, cancellationToken);
-            var runtimeSettingsJson = await ReadNullableStringAsync(reader, 13, cancellationToken);
+            var staticValuesJson = await ReadNullableStringAsync(reader, 13, cancellationToken);
+            var runtimeSettingsJson = await ReadNullableStringAsync(reader, 14, cancellationToken);
             parameters.Add(new ReportingParameterImportCandidate
             {
                 SourceUiParameterId = reader.GetInt32(0),
                 CreationOrder = await reader.IsDBNullAsync(1, cancellationToken) ? 0 : Convert.ToInt32(reader.GetValue(1), CultureInfo.InvariantCulture),
                 Name = reader.GetString(2),
-                Label = await ReadNullableStringAsync(reader, 3, cancellationToken),
-                ComponentTypeName = reader.GetString(4),
-                EntityKey = await ReadNullableStringAsync(reader, 5, cancellationToken),
-                ValueFieldTemplate = await ReadNullableStringAsync(reader, 6, cancellationToken),
-                DisplayFieldTemplate = await ReadNullableStringAsync(reader, 7, cancellationToken),
-                InitialValue = await ReadNullableStringAsync(reader, 8, cancellationToken),
-                IsRequired = reader.GetBoolean(9),
-                IsAdditional = reader.GetBoolean(10),
-                IsVisible = reader.GetBoolean(11),
+                DefinitionName = reader.GetString(3),
+                Label = await ReadNullableStringAsync(reader, 4, cancellationToken),
+                ComponentTypeName = reader.GetString(5),
+                EntityKey = await ReadNullableStringAsync(reader, 6, cancellationToken),
+                ValueFieldTemplate = await ReadNullableStringAsync(reader, 7, cancellationToken),
+                DisplayFieldTemplate = await ReadNullableStringAsync(reader, 8, cancellationToken),
+                InitialValue = await ReadNullableStringAsync(reader, 9, cancellationToken),
+                IsRequired = reader.GetBoolean(10),
+                IsAdditional = reader.GetBoolean(11),
+                IsVisible = reader.GetBoolean(12),
                 StaticValidValues = ParseStaticValues(staticValuesJson),
                 RuntimeSettings = ParseRuntimeSettings(runtimeSettingsJson)
             });
@@ -218,11 +220,12 @@ internal sealed class ReportingMetadataReader
     {
         const string sql = """
             SELECT
-                PD.[Name] AS ParameterName,
-                DependsOnPD.[Name] AS DependsOnParameterName,
+                COALESCE(NULLIF(UP.NameOverride, ''), PD.[Name]) AS ParameterName,
+                COALESCE(NULLIF(DependsOnUP.NameOverride, ''), DependsOnPD.[Name]) AS DependsOnParameterName,
                 UPD.CompareParams,
                 CO.[Name] AS CompareOperator,
-                UPD.DependencyFilterPath
+                UPD.DependencyFilterPath,
+                UPD.ComparisonValueTemplate
             FROM [Reporting].[UiParameterDependency] AS UPD
             INNER JOIN [Reporting].[UiParameter] AS UP ON UP.Id = UPD.UiParameterId
             INNER JOIN [Reporting].[ParameterDefinition] AS PD ON PD.Id = UP.ParameterDefinitionId
@@ -247,7 +250,8 @@ internal sealed class ReportingMetadataReader
                 reader.GetString(1),
                 reader.GetBoolean(2),
                 await ReadNullableStringAsync(reader, 3, cancellationToken),
-                await ReadNullableStringAsync(reader, 4, cancellationToken)));
+                await ReadNullableStringAsync(reader, 4, cancellationToken),
+                await ReadNullableStringAsync(reader, 5, cancellationToken)));
         }
 
         return dependencies;
@@ -409,6 +413,8 @@ internal sealed class ReportingParameterImportCandidate
 
     public string Name { get; set; } = string.Empty;
 
+    public string DefinitionName { get; set; } = string.Empty;
+
     public string? Label { get; set; }
 
     public string ComponentTypeName { get; set; } = string.Empty;
@@ -439,4 +445,5 @@ internal sealed record ReportingParameterImportDependency(
     string DependsOnParameterName,
     bool CompareParams,
     string? CompareOperator,
-    string? DependencyFilterPath);
+    string? DependencyFilterPath,
+    string? ComparisonValueTemplate);

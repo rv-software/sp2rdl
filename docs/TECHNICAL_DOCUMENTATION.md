@@ -159,17 +159,17 @@ Vraca putanju state fajla za dati RDL/RDLC.
 
 ### `ReportingMetadataReader`
 
-Cita `Reporting.ParameterDefinition` i povezani `Reporting.ComponentType` iz baze izabrane na `Output` tabu. `Apply definitions` na `Report params` tabu koristi ovaj reader da po imenu parametra primijeni globalne default vrijednosti na postojece redove, bez automatskog dodavanja novih report parametara.
+Cita `Reporting.ParameterDefinition` i povezani `Reporting.ComponentType` iz baze izabrane na `Output` tabu. `Apply definitions` na `Report params` tabu koristi ovaj reader da po `DefinitionName` vrijednosti, odnosno po aktivnom imenu kada definicija nije navedena, primijeni globalne default vrijednosti na postojece redove, bez automatskog dodavanja novih report parametara.
 
 Isti reader cita `ReportVersion` listu i pripadajuce `UiParameter` redove za `Load from report...` tok. Import dijalog prikazuje checkbox listu parametara, a glavna forma dodaje nedostajuce redove ili, ako korisnik ukljuci update opciju, osvjezava postojece redove kompletnim runtime podesavanjima.
 
 ### `ReportingMigrationSqlBuilder`
 
-Gradi Flyway SQL za runtime `Reporting` metadata tabele na osnovu trenutnog `ReportModel`. Koristi `MERGE` za report, definicije parametara, UI parametre i dependency zapise. `ReportVersion` se bira po paru `ReportId/ValidFrom`: ako verzija za taj datum postoji, koristi se ona; ako ne postoji, kreira se nova verzija sa narednim brojem.
+Gradi Flyway SQL za runtime `Reporting` metadata tabele na osnovu trenutnog `ReportModel`. Koristi `MERGE` za report, definicije parametara, UI parametre i dependency zapise. `ParameterDefinition` se MERGE-uje po `DefinitionName`, a `UiParameter` po `VersionId + ParameterDefinitionId + NameOverride`, tako da vise UI parametara moze dijeliti istu definiciju. `ReportVersion` se bira po paru `ReportId/ValidFrom`: ako verzija za taj datum postoji, koristi se ona; ako ne postoji, kreira se nova verzija sa narednim brojem.
 
 `Preview SQL`, `Save SQL` i `Execute SQL` koriste isti builder. `Execute SQL` dodatno provjerava da ciljna baza vec ima `Reporting` semu i zatim izvrsava generisane batch-eve direktno nad izabranom Reporting konekcijom.
 
-Kod `UiParameterDependency` redova `CompareOperatorId` se popunjava samo kada je `CompareParams = 1`. Za obicne filter/cascading dependency redove (`CompareParams = 0`) ostaje `NULL`; isto pravilo je zasticeno CHECK constraintom u Reporting modelu.
+Kod `UiParameterDependency` redova `CompareOperatorId` se popunjava samo kada je `CompareParams = 1`. `ComparisonValueTemplate` se takode upisuje samo za compare dependency i omogucava runtime poredenje dropdown parametara po izvedenoj vrijednosti, npr. `{PostalCode}`. Za obicne filter/cascading dependency redove (`CompareParams = 0`) operator ostaje `NULL`; isto pravilo je zasticeno CHECK constraintom u Reporting modelu.
 
 `ReportValidatorCatalog` ucitava `config/report-validators.json` iz solution foldera, output foldera ili embedded defaulta. Config ima top-level `kinds` katalog dozvoljenih pripadnosti i listu runtime settings stavki. `ParameterValidatorsDialog` koristi katalog da za trenutni `ControlType` prikaze samo dozvoljene runtime settings. Stavke imaju `kind` (`validation`, `behavior`, `metadata`), pa se i metadata poput `defaultValue` cuva u istom toku. Izabrane vrijednosti se cuvaju u `ReportParameter.RuntimeSettings`, a builder ih serializuje u `UiParameter.RuntimeSettings`.
 
@@ -225,7 +225,17 @@ Slaze body segment redom: memorandum/subreport, report title, parameter summary,
 
 ### `BuildTablix`
 
-Generise glavni tablix. Ulaz su dataset kolone, grupe, agregacije i `TablixStyleConfig`. Sirina tablixa je procenat korisne sirine stranice, a kolone se automatski rasporedjuju unutar te sirine.
+Generise glavni tablix. Ulaz su dataset kolone, grupe, agregacije i `TablixStyleConfig`. Sirina tablixa je procenat korisne sirine stranice, a kolone se automatski rasporedjuju unutar te sirine. `GroupRenderMode` bira izmedju postojeceg band layouta i horizontalnog tabular layouta.
+
+### `BuildTabularHorizontalTablix`
+
+Generise Excel-like layout u kojem group kolone ostaju u tablixu. Detail izrazi za group kolone koriste `RowNumber` nad scope-om grupe da vrijednost bude prikazana samo na prvom detail redu unutar grupe. Subtotal i grand total redovi se generisu za agregirane kolone kao i u band layoutu, ali bez posebnih group header redova.
+
+### `BuildMatrixCrosstabTablix`
+
+Generise prvu matrix/crosstab granu. Ulaz su kolone oznacene kroz `MatrixRole`: jedna ili vise `RowGroup`, tacno jedna `ColumnGroup` i tacno jedna `Measure` kolona sa agregacijom. Row group kolone ostaju staticke lijevo, `ColumnGroup` postaje dinamicka kolona u `TablixColumnHierarchy`, a measure celija koristi agregat u presjeku trenutnog row/column scope-a. Generator dodaje i static total kolonu desno, static total red dole i grand total u donjem desnom uglu.
+
+`CalculateMatrixColumnWidths` koristi `TablixStyleConfig.MatrixExpectedColumnCount` da izracuna sirinu dinamicke measure kolone. Time ocekivani broj dinamickih kolona plus total kolona staje u konfigurisanu sirinu tablixa.
 
 ### `CalculateTablixColumnWidths`
 

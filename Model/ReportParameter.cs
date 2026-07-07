@@ -4,6 +4,8 @@ internal sealed class ReportParameter
 {
     public string Name { get; set; } = string.Empty;
 
+    public string? DefinitionName { get; set; }
+
     public string SqlTypeName { get; set; } = string.Empty;
 
     public string Prompt { get; set; } = string.Empty;
@@ -47,6 +49,8 @@ internal sealed class ReportParameter
     public string? CompareToParameterName { get; set; }
 
     public string? CompareOperator { get; set; }
+
+    public string? ComparisonValueTemplate { get; set; }
 
     public LookupConfig? Lookup { get; set; }
 

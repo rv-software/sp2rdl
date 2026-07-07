@@ -60,6 +60,18 @@ Automatsko poravnanje je:
 
 Sirine kolona se racunaju automatski po tipu i ocekivanoj duzini. `Tablix width %` na `Body / Tablix` odredjuje ukupnu sirinu tablixa u odnosu na korisnu sirinu stranice, a kolone se onda rasporedjuju unutar te sirine.
 
+`Grouping layout` na `Body / Tablix` bira nacin prikaza grupa. `Band oriented` je postojeci layout sa group header/footer redovima. `Tabular horizontal` ostavlja group kolone u glavnom tablixu, ponovljene vrijednosti prikazuje samo na prvom detail redu grupe i zadrzava subtotal/grand total redove za agregirane kolone.
+
+`Matrix / Crosstab` je posebna grana za analiticke izvjestaje u dugom obliku. Za prvu verziju na `Main dataset` kolonama treba postaviti:
+
+- jednu ili vise kolona kao `Matrix role = RowGroup`,
+- tacno jednu kolonu kao `Matrix role = ColumnGroup`,
+- tacno jednu kolonu kao `Matrix role = Measure`, uz izabranu agregaciju.
+
+Vrijednosti `ColumnGroup` kolone postaju dinamicke kolone reporta, a `Measure` se agregira u presjeku row/column grupa.
+Matrix generise i total kolonu desno, total red na dnu i grand total u donjem desnom uglu za izabranu measure kolonu.
+`Matrix cols` na `Body / Tablix` je ocekivani broj dinamickih column group vrijednosti. Generator koristi taj broj da measure kolone i total kolona stanu u sirinu stranice. Ako se u runtime-u pojavi vise vrijednosti od tog broja, SSRS ce i dalje prosiriti matrix.
+
 ## SQL text dataset
 
 SQL text mode je koristan kada glavni dataset jos nije pretvoren u stored proceduru ili kada se zeli brz prototip. `Inspect` ne izvrsava SQL, nego koristi SQL Server metadata:
@@ -97,7 +109,7 @@ WHERE X.MunicipalityId = @MunicipalityId;
 
 Polje `Bind to SP param` povezuje report parametar sa stvarnim SQL parametrom procedure ili SQL text dataset parametrom.
 
-Ako je `Output` tab povezan na bazu sa `Reporting` semom, dugme `Apply definitions` moze primijeniti postojece `Reporting.ParameterDefinition` vrijednosti na trenutne redove po imenu parametra. Dugme ne dodaje nove parametre i ne pokrece se automatski; namijenjeno je za reuse definicija poslije rucnog dodavanja svih potrebnih report parametara.
+Ako je `Output` tab povezan na bazu sa `Reporting` semom, dugme `Load definitions` puni `Definition` dropdown iz `Reporting.ParameterDefinition`, a `Apply definitions` primjenjuje postojece definicije na trenutne redove. Kolona `Definition` predstavlja `ParameterDefinition.Name`, dok je kolona `Name` aktivno ime UI/report parametra (`UiParameter.NameOverride` kada se razlikuje od definicije). Kada prvi put popunis novi reusable parametar, izaberi taj red i klikni `Save definition`; generator ce upisati `ParameterDefinition`, ponovo ucitati definicije i ostaviti red vezan na sacuvanu definiciju.
 
 `Load from report...` cita parametre iz postojece `Reporting.ReportVersion` konfiguracije. U dijalogu se nude samo trenutno aktivne verzije aktivnih reporta, tj. verzije za koje je danasnji datum izmedju `ValidFrom` i `ValidTo`. Bira se report verzija i checkboxovima oznacavaju parametri za kopiranje. Ako je ukljuceno `Update existing parameters`, redovi sa istim imenom se osvjezavaju kompletnim runtime podesavanjima; ako nije, postojeci redovi se preskacu, a nedostajuci se dodaju.
 
@@ -108,6 +120,7 @@ Za runtime katalog i FE formu koriste se dodatna polja:
 - `Value template`: polje ili template vrijednosti, ukljucujuci kompozitne kljuceve.
 - `Display template`: polje ili template koji FE prikazuje korisniku.
 - `Filter path`: putanja za posredno filtriranje kada dependency ne ide direktno preko izabranog UI parametra.
+- `Compare template`: template vrijednosti koja se koristi za poredenje dropdown parametara kada se ne poredi standardni value field, npr. `{PostalCode}`.
 
 `Runtime settings...` otvara editor runtime postavki za izabrani parametar. Lista ponudjenih stavki dolazi iz `config/report-validators.json` i zavisi od `Control` vrijednosti. Stavke mogu biti `validation`, `behavior` ili `metadata`, npr. `defaultValue`. Izabrane postavke se cuvaju u state JSON-u reporta, a Reporting metadata SQL ih upisuje u `Reporting.UiParameter.RuntimeSettings` kao JSON.
 

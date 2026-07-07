@@ -292,26 +292,38 @@ internal sealed class RdlBuilder
             new XElement(Rdl + "ImageData", Convert.ToBase64String(File.ReadAllBytes(path)))));
     }
 
+    /// <summary>
+    /// Builds the RDL query block and resolves query parameter expressions against report parameter metadata.
+    /// </summary>
     private static XElement BuildQuery(ReportModel model, DatasetConfig dataset)
         => new(Rdl + "Query",
             new XElement(Rdl + "DataSourceName", model.SharedDataSourceName),
             new XElement(Rdl + "CommandType", dataset.CommandKind == CommandKind.StoredProcedure ? "StoredProcedure" : "Text"),
             new XElement(Rdl + "CommandText", dataset.Command),
-            BuildQueryParameters(dataset),
+            BuildQueryParameters(model, dataset),
             new XElement(Rdl + "Timeout", GetDatasetTimeout(model, dataset)));
 
-    private static XElement? BuildQueryParameters(DatasetConfig dataset)
+    /// <summary>
+    /// Builds dataset query parameters and guards nullable typed parameters from passing the literal text NULL.
+    /// </summary>
+    private static XElement? BuildQueryParameters(ReportModel model, DatasetConfig dataset)
     {
         if (dataset.ParameterBindings.Count == 0)
         {
             return null;
         }
 
+        var reportParameters = BuildEffectiveReportParameters(model)
+            .ToDictionary(parameter => parameter.Name.TrimStart('@'), StringComparer.OrdinalIgnoreCase);
+
         return new XElement(Rdl + "QueryParameters",
             dataset.ParameterBindings.Select(binding =>
-                new XElement(Rdl + "QueryParameter",
+            {
+                reportParameters.TryGetValue(binding.ReportParameterName.TrimStart('@'), out var parameter);
+                return new XElement(Rdl + "QueryParameter",
                     new XAttribute("Name", EnsureAtPrefix(binding.DatasetParameterName)),
-                    new XElement(Rdl + "Value", $"=Parameters!{binding.ReportParameterName}.Value"))));
+                    new XElement(Rdl + "Value", BuildQueryParameterValueExpression(binding, parameter)));
+            }));
     }
 
     private static XElement BuildFields(DatasetConfig dataset)
@@ -321,6 +333,20 @@ internal sealed class RdlBuilder
                     new XAttribute("Name", field.Name),
                     new XElement(Rdl + "DataField", field.Name),
                     new XElement(Rd + "TypeName", MapClrTypeName(field.SqlTypeName)))));
+
+    /// <summary>
+    /// Creates the query parameter expression, converting nullable typed literal NULL values to database nulls.
+    /// </summary>
+    private static string BuildQueryParameterValueExpression(DatasetParameterBinding binding, ReportParameter? parameter)
+    {
+        var parameterReference = $"Parameters!{binding.ReportParameterName}.Value";
+        if (parameter is null || parameter.MultiValue || IsStringReportParameter(parameter))
+        {
+            return "=" + parameterReference;
+        }
+
+        return $"=IIF(IsNothing({parameterReference}) OR CStr({parameterReference}) = \"NULL\", Nothing, {parameterReference})";
+    }
 
     private static XElement? BuildReportParameters(ReportModel model)
     {
@@ -349,6 +375,9 @@ internal sealed class RdlBuilder
                     parametersUsedInQueries.Contains(parameter.Name.TrimStart('@')))));
     }
 
+    /// <summary>
+    /// Builds one report parameter and normalizes explicit NULL defaults for nullable typed values.
+    /// </summary>
     private static XElement BuildReportParameter(ReportParameter parameter, bool usedInQuery)
     {
         var element = new XElement(Rdl + "ReportParameter",
@@ -360,7 +389,7 @@ internal sealed class RdlBuilder
             element.Add(
                 new XElement(Rdl + "DefaultValue",
                     new XElement(Rdl + "Values",
-                        new XElement(Rdl + "Value", parameter.DefaultValueExpression))));
+                        new XElement(Rdl + "Value", NormalizeReportParameterDefaultExpression(parameter)))));
         }
         else if (!string.IsNullOrWhiteSpace(parameter.DefaultValueDatasetName)
             && !string.IsNullOrWhiteSpace(parameter.DefaultValueField))
@@ -406,6 +435,25 @@ internal sealed class RdlBuilder
         }
 
         return element;
+    }
+
+    /// <summary>
+    /// Converts user-entered NULL defaults to the SSRS null expression for nullable non-string parameters.
+    /// </summary>
+    private static string NormalizeReportParameterDefaultExpression(ReportParameter parameter)
+    {
+        var expression = parameter.DefaultValueExpression?.Trim() ?? string.Empty;
+        if (!parameter.Nullable || IsStringReportParameter(parameter))
+        {
+            return expression;
+        }
+
+        var normalized = expression.StartsWith("=", StringComparison.Ordinal)
+            ? expression[1..].Trim()
+            : expression;
+        return string.Equals(normalized, "NULL", StringComparison.OrdinalIgnoreCase)
+            ? "=Nothing"
+            : expression;
     }
 
     private static XElement? BuildValidValues(ReportParameter parameter)
@@ -1300,13 +1348,32 @@ internal sealed class RdlBuilder
             .ToList();
         var groups = GetTablixGroups(fields);
         var aggregateFields = fields
-            .Where(field => !string.IsNullOrWhiteSpace(field.AggregateFunction))
+            .Where(HasAggregateFunction)
             .ToList();
         var rowCount = 1 + groups.Count * 2 + 1 + groups.Count + (aggregateFields.Count > 0 ? 1 : 0);
         return Math.Max(1.25d, rowCount * 0.6d);
     }
 
+    /// <summary>
+    /// Builds the main tablix using the configured grouping render mode.
+    /// </summary>
     private static XElement BuildTablix(
+        DatasetConfig dataset,
+        double usableWidth,
+        double top,
+        TablixStyleConfig tablixStyle,
+        IReadOnlyList<LocalizationLabel> localizationLabels)
+        => tablixStyle.GroupRenderMode switch
+        {
+            GroupRenderMode.TabularHorizontal => BuildTabularHorizontalTablix(dataset, usableWidth, top, tablixStyle, localizationLabels),
+            GroupRenderMode.MatrixCrosstab => BuildMatrixCrosstabTablix(dataset, usableWidth, top, tablixStyle, localizationLabels),
+            _ => BuildBandTablix(dataset, usableWidth, top, tablixStyle, localizationLabels)
+        };
+
+    /// <summary>
+    /// Builds the existing band-oriented tablix layout.
+    /// </summary>
+    private static XElement BuildBandTablix(
         DatasetConfig dataset,
         double usableWidth,
         double top,
@@ -1342,7 +1409,7 @@ internal sealed class RdlBuilder
         }
 
         var aggregateFields = detailFields
-            .Where(field => !string.IsNullOrWhiteSpace(field.AggregateFunction))
+            .Where(HasAggregateFunction)
             .ToList();
         // The configured percentage controls the whole tablix; individual columns
         // keep the automatic type-based distribution inside that width.
@@ -1390,6 +1457,461 @@ internal sealed class RdlBuilder
             new XElement(Rdl + "Style",
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "None"))));
+    }
+
+    /// <summary>
+    /// Builds an Excel-like horizontal grouping layout where group fields remain as tablix columns.
+    /// </summary>
+    private static XElement BuildTabularHorizontalTablix(
+        DatasetConfig dataset,
+        double usableWidth,
+        double top,
+        TablixStyleConfig tablixStyle,
+        IReadOnlyList<LocalizationLabel> localizationLabels)
+    {
+        var fields = dataset.Fields
+            .OrderBy(field => field.OrdinalPosition <= 0 ? int.MaxValue : field.OrdinalPosition)
+            .ThenBy(field => field.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var groups = GetTablixGroups(fields);
+        var columns = fields
+            .Where(field => field.IncludeInReport)
+            .ToList();
+        if (columns.Count == 0)
+        {
+            columns = fields.Take(1).ToList();
+        }
+
+        var aggregateFields = columns
+            .Where(HasAggregateFunction)
+            .ToList();
+        var aggregateFieldNames = aggregateFields
+            .Select(field => field.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var tablixWidth = GetTablixWidth(usableWidth, tablixStyle);
+        var columnWidths = CalculateTablixColumnWidths(columns, tablixWidth);
+        var tablixRows = new List<XElement>
+        {
+            BuildTablixRow(columns, "Header", "0.65cm", field => GetLocalizationExpression(localizationLabels, "Column." + field.Name) ?? field.Name, true, tablixStyle),
+            BuildTabularHorizontalDetailRow(columns, groups, aggregateFieldNames, tablixStyle)
+        };
+
+        if (tablixStyle.ShowTabularHorizontalSubtotals)
+        {
+            foreach (var group in groups.AsEnumerable().Reverse())
+            {
+                var style = GetGroupVisualStyle(group.Level, tablixStyle);
+                tablixRows.Add(BuildAggregateRow(columns, aggregateFields, $"sp2rdlGroup{group.Level}", BuildGroupSubtotalLabel(group, localizationLabels), style.BackgroundColor, style.FontStyle, tablixStyle));
+            }
+        }
+
+        if (tablixStyle.ShowTabularHorizontalGrandTotal && aggregateFields.Count > 0)
+        {
+            tablixRows.Add(BuildAggregateRow(columns, aggregateFields, null, GetLocalizationExpression(localizationLabels, "GrandTotal") ?? "Ukupno", GetGrandTotalBackgroundColor(tablixStyle), fontStyle: null, tablixStyle));
+        }
+
+        return new XElement(Rdl + "Tablix",
+            new XAttribute("Name", "TablixMain"),
+            new XElement(Rdl + "TablixBody",
+                new XElement(Rdl + "TablixColumns",
+                    columnWidths.Select(width => new XElement(Rdl + "TablixColumn",
+                        new XElement(Rdl + "Width", ToCentimeters(width))))),
+                new XElement(Rdl + "TablixRows", tablixRows)),
+            new XElement(Rdl + "TablixColumnHierarchy",
+                new XElement(Rdl + "TablixMembers", columns.Select(_ => new XElement(Rdl + "TablixMember")))),
+            BuildTabularHorizontalRowHierarchy(groups, tablixStyle.ShowTabularHorizontalSubtotals, tablixStyle.ShowTabularHorizontalGrandTotal && aggregateFields.Count > 0),
+            new XElement(Rdl + "DataSetName", dataset.Name),
+            new XElement(Rdl + "Top", ToCentimeters(top)),
+            new XElement(Rdl + "Left", "0cm"),
+            new XElement(Rdl + "Height", ToCentimeters(Math.Max(1.25d, tablixRows.Count * 0.6d))),
+            new XElement(Rdl + "Width", ToCentimeters(tablixWidth)),
+            new XElement(Rdl + "Style",
+                new XElement(Rdl + "Border",
+                    new XElement(Rdl + "Style", "None"))));
+    }
+
+    /// <summary>
+    /// Builds a detail-cell expression that suppresses repeated group values and places aggregates on the first group row.
+    /// </summary>
+    private static string BuildTabularHorizontalDetailExpression(
+        DatasetField field,
+        IReadOnlyList<TablixGroup> groups,
+        ISet<string> aggregateFieldNames)
+    {
+        if (field.GroupLevel is >= 1 and <= 4)
+        {
+            return $"=IIF(RowNumber(\"sp2rdlGroup{field.GroupLevel}\") = 1, Fields!{field.Name}.Value, Nothing)";
+        }
+
+        if (aggregateFieldNames.Contains(field.Name) && groups.Count > 0)
+        {
+            var deepestGroup = groups[^1];
+            var scopeName = $"sp2rdlGroup{deepestGroup.Level}";
+            return $"=IIF(RowNumber(\"{scopeName}\") = 1, {BuildAggregateExpressionBody(field, scopeName)}, Nothing)";
+        }
+
+        return $"=Fields!{field.Name}.Value";
+    }
+
+    /// <summary>
+    /// Builds the horizontal-grouping detail row with group and aggregate cells visually merged inside their group.
+    /// </summary>
+    private static XElement BuildTabularHorizontalDetailRow(
+        IReadOnlyList<DatasetField> columns,
+        IReadOnlyList<TablixGroup> groups,
+        ISet<string> aggregateFieldNames,
+        TablixStyleConfig tablixStyle)
+    {
+        var aggregateBorderScope = groups.Count > 0
+            ? $"sp2rdlGroup{groups[^1].Level}"
+            : null;
+
+        return new(Rdl + "TablixRow",
+            new XElement(Rdl + "Height", "0.6cm"),
+            new XElement(Rdl + "TablixCells",
+                columns.Select((field, index) =>
+                {
+                    var isGroupField = field.GroupLevel is >= 1 and <= 4;
+                    var isAggregateField = aggregateFieldNames.Contains(field.Name) && aggregateBorderScope is not null;
+                    var borderScope = isGroupField
+                        ? $"sp2rdlGroup{field.GroupLevel}"
+                        : isAggregateField
+                            ? aggregateBorderScope
+                            : null;
+
+                    return new XElement(Rdl + "TablixCell",
+                        new XElement(Rdl + "CellContents",
+                            BuildCellTextbox(
+                                $"sp2rdlTabularDetail{index + 1}",
+                                BuildTabularHorizontalDetailExpression(field, groups, aggregateFieldNames),
+                                isHeader: false,
+                                field.Format,
+                                GetFieldTextAlign(field),
+                                verticalOnlyBorders: isGroupField || isAggregateField,
+                                conditionalHorizontalBorderScope: borderScope,
+                                tablixStyle: tablixStyle)));
+                })));
+    }
+
+    /// <summary>
+    /// Builds the first crosstab layout: row groups on the left, one dynamic column group, and one measure.
+    /// </summary>
+    private static XElement BuildMatrixCrosstabTablix(
+        DatasetConfig dataset,
+        double usableWidth,
+        double top,
+        TablixStyleConfig tablixStyle,
+        IReadOnlyList<LocalizationLabel> localizationLabels)
+    {
+        var fields = dataset.Fields
+            .OrderBy(field => field.OrdinalPosition <= 0 ? int.MaxValue : field.OrdinalPosition)
+            .ThenBy(field => field.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var rowGroups = fields
+            .Where(field => field.MatrixRole == MatrixFieldRole.RowGroup)
+            .OrderBy(field => field.MatrixLevel <= 0 ? int.MaxValue : field.MatrixLevel)
+            .ThenBy(field => field.OrdinalPosition <= 0 ? int.MaxValue : field.OrdinalPosition)
+            .ThenBy(field => field.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var columnGroups = fields
+            .Where(field => field.MatrixRole == MatrixFieldRole.ColumnGroup)
+            .OrderBy(field => field.MatrixLevel <= 0 ? int.MaxValue : field.MatrixLevel)
+            .ThenBy(field => field.OrdinalPosition <= 0 ? int.MaxValue : field.OrdinalPosition)
+            .ThenBy(field => field.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var measures = fields
+            .Where(field => field.MatrixRole == MatrixFieldRole.Measure)
+            .OrderBy(field => field.OrdinalPosition <= 0 ? int.MaxValue : field.OrdinalPosition)
+            .ThenBy(field => field.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        ValidateMatrixCrosstabConfiguration(rowGroups, columnGroups, measures);
+
+        var columnGroup = columnGroups[0];
+        var measure = measures[0];
+        var columns = rowGroups.Concat([measure, measure]).ToList();
+        var tablixWidth = GetTablixWidth(usableWidth, tablixStyle);
+        var columnWidths = CalculateMatrixColumnWidths(rowGroups, measure, tablixWidth, tablixStyle);
+        var headerRow = BuildMatrixHeaderRow(rowGroups, columnGroup, tablixStyle, localizationLabels);
+        var detailRow = BuildMatrixDetailRow(rowGroups, measure, tablixStyle);
+        var totalRow = BuildMatrixColumnTotalRow(rowGroups, measure, tablixStyle, localizationLabels);
+
+        return new XElement(Rdl + "Tablix",
+            new XAttribute("Name", "TablixMain"),
+            new XElement(Rdl + "TablixBody",
+                new XElement(Rdl + "TablixColumns",
+                    columnWidths.Select(width => new XElement(Rdl + "TablixColumn",
+                        new XElement(Rdl + "Width", ToCentimeters(width))))),
+                new XElement(Rdl + "TablixRows", headerRow, detailRow, totalRow)),
+            BuildMatrixColumnHierarchy(rowGroups, columnGroup),
+            BuildMatrixRowHierarchy(rowGroups),
+            new XElement(Rdl + "DataSetName", dataset.Name),
+            new XElement(Rdl + "Top", ToCentimeters(top)),
+            new XElement(Rdl + "Left", "0cm"),
+            new XElement(Rdl + "Height", "1.85cm"),
+            new XElement(Rdl + "Width", ToCentimeters(tablixWidth)),
+            new XElement(Rdl + "Style",
+                new XElement(Rdl + "Border",
+                    new XElement(Rdl + "Style", "None"))));
+    }
+
+    /// <summary>
+    /// Validates the first supported matrix shape before RDL generation.
+    /// </summary>
+    private static void ValidateMatrixCrosstabConfiguration(
+        IReadOnlyList<DatasetField> rowGroups,
+        IReadOnlyList<DatasetField> columnGroups,
+        IReadOnlyList<DatasetField> measures)
+    {
+        if (rowGroups.Count == 0)
+        {
+            throw new InvalidOperationException("Matrix / Crosstab requires at least one field with Matrix role = RowGroup.");
+        }
+
+        if (columnGroups.Count != 1)
+        {
+            throw new InvalidOperationException("Matrix / Crosstab currently requires exactly one field with Matrix role = ColumnGroup.");
+        }
+
+        if (measures.Count != 1)
+        {
+            throw new InvalidOperationException("Matrix / Crosstab currently requires exactly one field with Matrix role = Measure.");
+        }
+
+        if (!HasAggregateFunction(measures[0]))
+        {
+            throw new InvalidOperationException("Matrix / Crosstab measure field must have an Aggregate selected.");
+        }
+    }
+
+    /// <summary>
+    /// Calculates matrix widths so the expected dynamic columns plus total column fit inside the configured tablix width.
+    /// </summary>
+    private static IReadOnlyList<double> CalculateMatrixColumnWidths(
+        IReadOnlyList<DatasetField> rowGroups,
+        DatasetField measure,
+        double tablixWidth,
+        TablixStyleConfig tablixStyle)
+    {
+        var rowGroupWidths = rowGroups
+            .Select(field => Math.Min(GetDesiredColumnWidth(field), GetMaximumColumnWidth(field)))
+            .ToList();
+        var expectedDynamicColumns = Math.Clamp(tablixStyle.MatrixExpectedColumnCount <= 0 ? 6 : tablixStyle.MatrixExpectedColumnCount, 1, 50);
+        var totalMeasureColumns = expectedDynamicColumns + 1;
+        var availableForMeasures = tablixWidth - rowGroupWidths.Sum();
+        var minimumMeasureWidth = Math.Min(GetDesiredColumnWidth(measure), GetMaximumColumnWidth(measure));
+        var measureWidth = availableForMeasures > 0
+            ? Math.Max(0.45d, availableForMeasures / totalMeasureColumns)
+            : 0.8d;
+
+        if (measureWidth < 0.6d && rowGroupWidths.Count > 0)
+        {
+            var targetRowWidth = Math.Max(0.8d, (tablixWidth - 0.6d * totalMeasureColumns) / rowGroupWidths.Count);
+            rowGroupWidths = rowGroupWidths.Select(width => Math.Min(width, targetRowWidth)).ToList();
+            measureWidth = Math.Max(0.6d, (tablixWidth - rowGroupWidths.Sum()) / totalMeasureColumns);
+        }
+
+        measureWidth = Math.Min(measureWidth, Math.Max(minimumMeasureWidth, 0.8d));
+        return rowGroupWidths.Concat([measureWidth, measureWidth]).ToList();
+    }
+
+    /// <summary>
+    /// Builds the matrix header row with row group captions and the dynamic column group caption.
+    /// </summary>
+    private static XElement BuildMatrixHeaderRow(
+        IReadOnlyList<DatasetField> rowGroups,
+        DatasetField columnGroup,
+        TablixStyleConfig tablixStyle,
+        IReadOnlyList<LocalizationLabel> localizationLabels)
+        => new(Rdl + "TablixRow",
+            new XElement(Rdl + "Height", "0.65cm"),
+            new XElement(Rdl + "TablixCells",
+                rowGroups.Select((field, index) => BuildMatrixCell(
+                        $"sp2rdlMatrixRowHeader{index + 1}",
+                        GetLocalizationExpression(localizationLabels, "Column." + field.Name) ?? field.Name,
+                        field,
+                        isHeader: true,
+                        tablixStyle))
+                    .Append(BuildMatrixCell(
+                        "sp2rdlMatrixColumnHeader",
+                        $"=Fields!{columnGroup.Name}.Value",
+                        columnGroup,
+                        isHeader: true,
+                        tablixStyle))
+                    .Append(BuildMatrixCell(
+                        "sp2rdlMatrixRowTotalHeader",
+                        GetLocalizationExpression(localizationLabels, "GrandTotal") ?? "Ukupno",
+                        columnGroup,
+                        isHeader: true,
+                        tablixStyle))));
+
+    /// <summary>
+    /// Builds the matrix value row with row group values and the aggregated measure value.
+    /// </summary>
+    private static XElement BuildMatrixDetailRow(
+        IReadOnlyList<DatasetField> rowGroups,
+        DatasetField measure,
+        TablixStyleConfig tablixStyle)
+        => new(Rdl + "TablixRow",
+            new XElement(Rdl + "Height", "0.6cm"),
+            new XElement(Rdl + "TablixCells",
+                rowGroups.Select((field, index) => BuildMatrixCell(
+                        $"sp2rdlMatrixRowValue{index + 1}",
+                        $"=Fields!{field.Name}.Value",
+                        field,
+                        isHeader: false,
+                        tablixStyle))
+                    .Append(BuildMatrixCell(
+                        "sp2rdlMatrixMeasureValue",
+                        BuildAggregateExpression(measure, null),
+                        measure,
+                        isHeader: false,
+                        tablixStyle))
+                    .Append(BuildMatrixCell(
+                        "sp2rdlMatrixRowTotalValue",
+                        BuildAggregateExpression(measure, null),
+                        measure,
+                        isHeader: false,
+                        fontWeight: "Bold",
+                        backgroundColor: null,
+                        tablixStyle))));
+
+    /// <summary>
+    /// Builds the matrix bottom total row with column totals and the grand total corner.
+    /// </summary>
+    private static XElement BuildMatrixColumnTotalRow(
+        IReadOnlyList<DatasetField> rowGroups,
+        DatasetField measure,
+        TablixStyleConfig tablixStyle,
+        IReadOnlyList<LocalizationLabel> localizationLabels)
+    {
+        var cells = new List<XElement>();
+        var labelCellContents = new XElement(Rdl + "CellContents",
+            BuildCellTextbox(
+                "sp2rdlMatrixColumnTotalLabel",
+                GetLocalizationExpression(localizationLabels, "GrandTotal") ?? "Ukupno",
+                isHeader: false,
+                format: null,
+                textAlign: "Left",
+                backgroundColor: GetGrandTotalBackgroundColor(tablixStyle),
+                fontWeight: "Bold",
+                tablixStyle: tablixStyle));
+        if (rowGroups.Count > 1)
+        {
+            labelCellContents.Add(new XElement(Rdl + "ColSpan", rowGroups.Count.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        cells.Add(new XElement(Rdl + "TablixCell", labelCellContents));
+        for (var index = 1; index < rowGroups.Count; index++)
+        {
+            cells.Add(new XElement(Rdl + "TablixCell"));
+        }
+
+        cells.Add(BuildMatrixCell(
+            "sp2rdlMatrixColumnTotalValue",
+            BuildAggregateExpression(measure, null),
+            measure,
+            isHeader: false,
+            fontWeight: "Bold",
+            backgroundColor: GetGrandTotalBackgroundColor(tablixStyle),
+            tablixStyle));
+        cells.Add(BuildMatrixCell(
+            "sp2rdlMatrixGrandTotalValue",
+            BuildAggregateExpression(measure, null),
+            measure,
+            isHeader: false,
+            fontWeight: "Bold",
+            backgroundColor: GetGrandTotalBackgroundColor(tablixStyle),
+            tablixStyle));
+
+        return new XElement(Rdl + "TablixRow",
+            new XElement(Rdl + "Height", "0.6cm"),
+            new XElement(Rdl + "TablixCells", cells));
+    }
+
+    /// <summary>
+    /// Builds one matrix cell using the existing textbox styling rules.
+    /// </summary>
+    private static XElement BuildMatrixCell(
+        string name,
+        string value,
+        DatasetField field,
+        bool isHeader,
+        string? fontWeight,
+        string? backgroundColor,
+        TablixStyleConfig tablixStyle)
+        => new(Rdl + "TablixCell",
+            new XElement(Rdl + "CellContents",
+                BuildCellTextbox(
+                    name,
+                    value,
+                    isHeader,
+                    field.Format,
+                    GetFieldTextAlign(field),
+                    backgroundColor ?? (isHeader ? GetHeaderBackgroundColor(tablixStyle) : null),
+                    fontWeight ?? (isHeader ? "Bold" : null),
+                    tablixStyle: tablixStyle)));
+
+    /// <summary>
+    /// Builds one matrix cell using default header/detail styling.
+    /// </summary>
+    private static XElement BuildMatrixCell(
+        string name,
+        string value,
+        DatasetField field,
+        bool isHeader,
+        TablixStyleConfig tablixStyle)
+        => BuildMatrixCell(name, value, field, isHeader, fontWeight: null, backgroundColor: null, tablixStyle);
+
+    /// <summary>
+    /// Builds static row-group columns plus one dynamic column group for the measure area.
+    /// </summary>
+    private static XElement BuildMatrixColumnHierarchy(IReadOnlyList<DatasetField> rowGroups, DatasetField columnGroup)
+        => new(Rdl + "TablixColumnHierarchy",
+            new XElement(Rdl + "TablixMembers",
+                rowGroups.Select(_ => new XElement(Rdl + "TablixMember"))
+                    .Append(new XElement(Rdl + "TablixMember",
+                        new XElement(Rdl + "Group",
+                            new XAttribute("Name", "sp2rdlMatrixColumnGroup"),
+                            new XElement(Rdl + "GroupExpressions",
+                                new XElement(Rdl + "GroupExpression", $"=Fields!{columnGroup.Name}.Value"))),
+                        new XElement(Rdl + "SortExpressions",
+                            new XElement(Rdl + "SortExpression",
+                                new XElement(Rdl + "Value", $"=Fields!{columnGroup.Name}.Value")))))
+                    .Append(new XElement(Rdl + "TablixMember"))));
+
+    /// <summary>
+    /// Builds the matrix row hierarchy from configured row group fields.
+    /// </summary>
+    private static XElement BuildMatrixRowHierarchy(IReadOnlyList<DatasetField> rowGroups)
+        => new(Rdl + "TablixRowHierarchy",
+            new XElement(Rdl + "TablixMembers",
+                new XElement(Rdl + "TablixMember",
+                    new XElement(Rdl + "KeepWithGroup", "After"),
+                    new XElement(Rdl + "RepeatOnNewPage", "true")),
+                BuildMatrixRowGroupMember(rowGroups, 0),
+                new XElement(Rdl + "TablixMember")));
+
+    /// <summary>
+    /// Builds nested row group members with a static leaf row for the matrix measure cells.
+    /// </summary>
+    private static XElement BuildMatrixRowGroupMember(IReadOnlyList<DatasetField> rowGroups, int index)
+    {
+        var field = rowGroups[index];
+        var groupName = $"sp2rdlMatrixRowGroup{index + 1}";
+        var childMember = index + 1 < rowGroups.Count
+            ? BuildMatrixRowGroupMember(rowGroups, index + 1)
+            : new XElement(Rdl + "TablixMember");
+
+        return new XElement(Rdl + "TablixMember",
+            new XElement(Rdl + "Group",
+                new XAttribute("Name", groupName),
+                new XElement(Rdl + "GroupExpressions",
+                    new XElement(Rdl + "GroupExpression", $"=Fields!{field.Name}.Value"))),
+            new XElement(Rdl + "SortExpressions",
+                new XElement(Rdl + "SortExpression",
+                    new XElement(Rdl + "Value", $"=Fields!{field.Name}.Value"))),
+            new XElement(Rdl + "TablixMembers", childMember));
     }
 
     private sealed record TablixGroup(int Level, IReadOnlyList<DatasetField> Fields);
@@ -1555,16 +2077,55 @@ internal sealed class RdlBuilder
 
     private static string BuildAggregateExpression(DatasetField field, string? scopeName)
     {
+        var expressionBody = BuildAggregateExpressionBody(field, scopeName);
+        return string.IsNullOrWhiteSpace(expressionBody) ? string.Empty : "=" + expressionBody;
+    }
+
+    /// <summary>
+    /// Determines whether a dataset field has one of the supported aggregate functions selected.
+    /// </summary>
+    private static bool HasAggregateFunction(DatasetField field)
+        => NormalizeAggregateFunctionName(field.AggregateFunction) is not null;
+
+    /// <summary>
+    /// Builds the aggregate expression body so callers can compose it inside larger RDL expressions.
+    /// </summary>
+    private static string BuildAggregateExpressionBody(DatasetField field, string? scopeName)
+    {
         var scope = string.IsNullOrWhiteSpace(scopeName) ? string.Empty : ", " + QuoteExpressionText(scopeName);
-        return field.AggregateFunction switch
+        return NormalizeAggregateFunctionName(field.AggregateFunction) switch
         {
-            "Sum" => $"=Sum(Fields!{field.Name}.Value{scope})",
-            "Avg" => $"=Avg(Fields!{field.Name}.Value{scope})",
-            "Min" => $"=Min(Fields!{field.Name}.Value{scope})",
-            "Max" => $"=Max(Fields!{field.Name}.Value{scope})",
-            "Count" => $"=Count(Fields!{field.Name}.Value{scope})",
-            "CountDistinct" => $"=CountDistinct(Fields!{field.Name}.Value{scope})",
+            "Sum" => $"Sum(Fields!{field.Name}.Value{scope})",
+            "Avg" => $"Avg(Fields!{field.Name}.Value{scope})",
+            "Min" => $"Min(Fields!{field.Name}.Value{scope})",
+            "Max" => $"Max(Fields!{field.Name}.Value{scope})",
+            "Count" => $"Count(Fields!{field.Name}.Value{scope})",
+            "CountDistinct" => $"CountDistinct(Fields!{field.Name}.Value{scope})",
             _ => string.Empty
+        };
+    }
+
+    /// <summary>
+    /// Normalizes aggregate function names from UI or saved state to the canonical generator names.
+    /// </summary>
+    private static string? NormalizeAggregateFunctionName(string? aggregateFunction)
+    {
+        if (string.IsNullOrWhiteSpace(aggregateFunction))
+        {
+            return null;
+        }
+
+        return aggregateFunction.Trim().ToLowerInvariant() switch
+        {
+            "sum" => "Sum",
+            "avg" => "Avg",
+            "min" => "Min",
+            "max" => "Max",
+            "count" => "Count",
+            "countdistinct" => "CountDistinct",
+            "count_distinct" => "CountDistinct",
+            "count distinct" => "CountDistinct",
+            _ => null
         };
     }
 
@@ -1590,11 +2151,19 @@ internal sealed class RdlBuilder
         return Math.Max(1.0d, usableWidth * percent / 100.0d);
     }
 
+    /// <summary>
+    /// Calculates generated column widths, honoring optional per-column width percentages before auto-sizing the rest.
+    /// </summary>
     private static IReadOnlyList<double> CalculateTablixColumnWidths(IReadOnlyList<DatasetField> fields, double usableWidth)
     {
         if (fields.Count == 0)
         {
             return [];
+        }
+
+        if (fields.Any(field => field.WidthPercent > 0))
+        {
+            return CalculateTablixColumnWidthsWithOverrides(fields, usableWidth);
         }
 
         // Start with type-aware widths, then stretch mostly text columns so the
@@ -1642,6 +2211,60 @@ internal sealed class RdlBuilder
         return desiredWidths
             .Zip(minimumWidths, (desired, minimum) => desired - ((desired - minimum) / shrinkableTotal * shrinkBy))
             .ToList();
+    }
+
+    /// <summary>
+    /// Applies user-defined width percentages and auto-sizes columns that do not have an explicit width.
+    /// </summary>
+    private static IReadOnlyList<double> CalculateTablixColumnWidthsWithOverrides(IReadOnlyList<DatasetField> fields, double usableWidth)
+    {
+        var widths = new double[fields.Count];
+        var automaticFields = new List<DatasetField>();
+        var automaticIndexes = new List<int>();
+
+        for (var index = 0; index < fields.Count; index++)
+        {
+            var widthPercent = fields[index].WidthPercent > 0
+                ? Math.Clamp(fields[index].WidthPercent, 1.0d, 100.0d)
+                : 0.0d;
+            if (widthPercent > 0)
+            {
+                widths[index] = usableWidth * widthPercent / 100.0d;
+                continue;
+            }
+
+            automaticFields.Add(fields[index]);
+            automaticIndexes.Add(index);
+        }
+
+        var remainingWidth = usableWidth - widths.Sum();
+        if (automaticFields.Count > 0 && remainingWidth > 0.1d)
+        {
+            var automaticWidths = CalculateTablixColumnWidths(automaticFields, remainingWidth);
+            for (var index = 0; index < automaticIndexes.Count; index++)
+            {
+                widths[automaticIndexes[index]] = automaticWidths[index];
+            }
+
+            return widths;
+        }
+
+        if (automaticFields.Count > 0)
+        {
+            foreach (var index in automaticIndexes)
+            {
+                widths[index] = GetMinimumColumnWidth(fields[index]);
+            }
+        }
+
+        var totalWidth = widths.Sum();
+        if (totalWidth <= 0.0d)
+        {
+            return Enumerable.Repeat(usableWidth / fields.Count, fields.Count).ToList();
+        }
+
+        var scale = usableWidth / totalWidth;
+        return widths.Select(width => Math.Max(0.35d, width * scale)).ToList();
     }
 
     private static void DistributeExtraWidth(IList<double> widths, IReadOnlyList<double> maximumWidths, IEnumerable<int> indexes, double extraWidth)
@@ -1825,6 +2448,62 @@ internal sealed class RdlBuilder
 
         return new XElement(Rdl + "TablixRowHierarchy",
             new XElement(Rdl + "TablixMembers", members));
+    }
+
+    /// <summary>
+    /// Builds row hierarchy for horizontal grouping without separate group header rows.
+    /// </summary>
+    private static XElement BuildTabularHorizontalRowHierarchy(IReadOnlyList<TablixGroup> groups, bool includeSubtotals, bool includeGrandTotal)
+    {
+        var members = new List<XElement>
+        {
+            new(Rdl + "TablixMember",
+                new XElement(Rdl + "KeepWithGroup", "After"),
+                new XElement(Rdl + "RepeatOnNewPage", "true"))
+        };
+
+        members.Add(groups.Count == 0
+            ? BuildDetailsMember()
+            : BuildTabularHorizontalGroupMember(groups, 0, includeSubtotals));
+
+        if (includeGrandTotal)
+        {
+            members.Add(new XElement(Rdl + "TablixMember"));
+        }
+
+        return new XElement(Rdl + "TablixRowHierarchy",
+            new XElement(Rdl + "TablixMembers", members));
+    }
+
+    /// <summary>
+    /// Builds one nested group member for horizontal grouping with optional subtotal rows.
+    /// </summary>
+    private static XElement BuildTabularHorizontalGroupMember(IReadOnlyList<TablixGroup> groups, int index, bool includeSubtotals)
+    {
+        var group = groups[index];
+        var groupScopeName = $"sp2rdlGroup{group.Level}";
+        var childMembers = new List<XElement>
+        {
+            index + 1 < groups.Count
+                ? BuildTabularHorizontalGroupMember(groups, index + 1, includeSubtotals)
+                : BuildDetailsMember()
+        };
+        if (includeSubtotals)
+        {
+            childMembers.Add(new XElement(Rdl + "TablixMember"));
+        }
+
+        return new XElement(Rdl + "TablixMember",
+            new XElement(Rdl + "Group",
+                new XAttribute("Name", groupScopeName),
+                new XElement(Rdl + "GroupExpressions",
+                    group.Fields.Select(field =>
+                        new XElement(Rdl + "GroupExpression", $"=Fields!{field.Name}.Value")))),
+            new XElement(Rdl + "SortExpressions",
+                group.Fields.Select(field =>
+                    new XElement(Rdl + "SortExpression",
+                        new XElement(Rdl + "Value", $"=Fields!{field.Name}.Value")))),
+            new XElement(Rdl + "TablixMembers", childMembers));
     }
 
     private static XElement BuildGroupMember(IReadOnlyList<TablixGroup> groups, int index)
@@ -2078,6 +2757,8 @@ internal sealed class RdlBuilder
         string? fontStyle = null,
         bool horizontalOnlyBorders = false,
         bool noBorders = false,
+        bool verticalOnlyBorders = false,
+        string? conditionalHorizontalBorderScope = null,
         string? textAlignOverride = null,
         TablixStyleConfig? tablixStyle = null)
     {
@@ -2114,7 +2795,7 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "Style",
                     new XElement(Rdl + "TextAlign", textAlignOverride ?? (isHeader ? "Center" : textAlign))))),
             new XElement(Rdl + "Style",
-                BuildCellBorders(horizontalOnlyBorders, noBorders, tablixStyle),
+                BuildCellBorders(horizontalOnlyBorders, noBorders, verticalOnlyBorders, conditionalHorizontalBorderScope, tablixStyle),
                 string.IsNullOrWhiteSpace(backgroundColor)
                     ? null
                     : new XElement(Rdl + "BackgroundColor", backgroundColor),
@@ -2124,7 +2805,10 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "PaddingBottom", "2pt")));
     }
 
-    private static object[] BuildCellBorders(bool horizontalOnlyBorders, bool noBorders, TablixStyleConfig tablixStyle)
+    /// <summary>
+    /// Builds RDL border elements for normal, horizontal-only, vertical-only, or borderless cells.
+    /// </summary>
+    private static object[] BuildCellBorders(bool horizontalOnlyBorders, bool noBorders, bool verticalOnlyBorders, string? conditionalHorizontalBorderScope, TablixStyleConfig tablixStyle)
     {
         var borderColor = NormalizeHexColor(tablixStyle.BorderColor, ReportLineColor);
         var borderWidth = ToPoints(tablixStyle.BorderWidthInPoints <= 0 ? 0.5d : tablixStyle.BorderWidthInPoints);
@@ -2135,6 +2819,36 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "Border",
                     new XElement(Rdl + "Style", "None"))
             ];
+        }
+
+        if (verticalOnlyBorders)
+        {
+            var borders = new List<object>
+            {
+                new XElement(Rdl + "Border",
+                    new XElement(Rdl + "Style", "None"))
+            };
+            var topBorder = BuildConditionalHorizontalBorder("TopBorder", conditionalHorizontalBorderScope, isTopBorder: true, borderColor, borderWidth);
+            var bottomBorder = BuildConditionalHorizontalBorder("BottomBorder", conditionalHorizontalBorderScope, isTopBorder: false, borderColor, borderWidth);
+            if (topBorder is not null)
+            {
+                borders.Add(topBorder);
+            }
+
+            if (bottomBorder is not null)
+            {
+                borders.Add(bottomBorder);
+            }
+
+            borders.Add(new XElement(Rdl + "LeftBorder",
+                new XElement(Rdl + "Style", "Solid"),
+                new XElement(Rdl + "Color", borderColor),
+                new XElement(Rdl + "Width", borderWidth)));
+            borders.Add(new XElement(Rdl + "RightBorder",
+                new XElement(Rdl + "Style", "Solid"),
+                new XElement(Rdl + "Color", borderColor),
+                new XElement(Rdl + "Width", borderWidth)));
+            return borders.ToArray();
         }
 
         if (!horizontalOnlyBorders)
@@ -2169,6 +2883,30 @@ internal sealed class RdlBuilder
                 new XElement(Rdl + "Color", borderColor),
                 new XElement(Rdl + "Width", borderWidth))
         ];
+    }
+
+    /// <summary>
+    /// Builds a top or bottom border that appears only at the start or end of a group scope.
+    /// </summary>
+    private static XElement? BuildConditionalHorizontalBorder(
+        string borderElementName,
+        string? scopeName,
+        bool isTopBorder,
+        string borderColor,
+        string borderWidth)
+    {
+        if (string.IsNullOrWhiteSpace(scopeName))
+        {
+            return null;
+        }
+
+        var condition = isTopBorder
+            ? $"RowNumber({QuoteExpressionText(scopeName)}) = 1"
+            : $"RowNumber({QuoteExpressionText(scopeName)}) = CountRows({QuoteExpressionText(scopeName)})";
+        return new XElement(Rdl + borderElementName,
+            new XElement(Rdl + "Style", $"=IIF({condition}, \"Solid\", \"None\")"),
+            new XElement(Rdl + "Color", borderColor),
+            new XElement(Rdl + "Width", borderWidth));
     }
 
     private static string GetFieldTextAlign(DatasetField field)
@@ -2809,6 +3547,12 @@ internal sealed class RdlBuilder
             _ => "String"
         };
     }
+
+    /// <summary>
+    /// Indicates whether a report parameter is rendered as an SSRS string parameter.
+    /// </summary>
+    private static bool IsStringReportParameter(ReportParameter parameter)
+        => string.Equals(MapReportParameterType(parameter), "String", StringComparison.Ordinal);
 
     private static string MapClrTypeName(string sqlTypeName)
     {

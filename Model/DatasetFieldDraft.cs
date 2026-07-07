@@ -10,6 +10,8 @@ internal sealed class DatasetFieldDraft
 
     public int OrdinalPosition { get; set; }
 
+    public double WidthPercent { get; set; }
+
     public bool IncludeInReport { get; set; } = true;
 
     public string? Format { get; set; }
@@ -22,9 +24,16 @@ internal sealed class DatasetFieldDraft
 
     public string? DefaultLabel { get; set; }
 
+    public MatrixFieldRole MatrixRole { get; set; } = MatrixFieldRole.None;
+
+    public int MatrixLevel { get; set; }
+
     public IReadOnlyList<string> AllowedAggregates
         => [string.Empty, .. GetAllowedAggregates(SqlTypeName)];
 
+    /// <summary>
+    /// Creates an editable grid draft from persisted dataset field metadata.
+    /// </summary>
     public static DatasetFieldDraft FromDatasetField(DatasetField field)
         => new()
         {
@@ -32,19 +41,29 @@ internal sealed class DatasetFieldDraft
             SqlTypeName = field.SqlTypeName,
             IsNullable = field.IsNullable,
             OrdinalPosition = field.OrdinalPosition,
+            WidthPercent = field.WidthPercent,
             IncludeInReport = field.IncludeInReport,
             Format = field.Format ?? GetDefaultFormat(field.SqlTypeName),
             GroupLevel = field.GroupLevel,
             AggregateFunction = field.AggregateFunction,
             TextAlign = field.TextAlign,
-            DefaultLabel = string.IsNullOrWhiteSpace(field.DefaultLabel) ? field.Name : field.DefaultLabel
+            DefaultLabel = string.IsNullOrWhiteSpace(field.DefaultLabel) ? field.Name : field.DefaultLabel,
+            MatrixRole = field.MatrixRole,
+            MatrixLevel = field.MatrixLevel
         };
 
+    /// <summary>
+    /// Converts the editable grid draft into dataset metadata used by state persistence and RDL generation.
+    /// </summary>
     public DatasetField ToDatasetField()
     {
         var groupLevel = GroupLevel is >= 1 and <= 4 ? GroupLevel : 0;
         var aggregateFunction = groupLevel > 0 ? null : NormalizeAggregateFunction(AggregateFunction, SqlTypeName);
-        return new(Name, SqlTypeName, IsNullable, OrdinalPosition, NormalizeFormat(Format), groupLevel, aggregateFunction, IncludeInReport, NormalizeTextAlign(TextAlign), NormalizeDefaultLabel(DefaultLabel, Name));
+        var matrixRole = Enum.IsDefined(MatrixRole) ? MatrixRole : MatrixFieldRole.None;
+        var matrixLevel = matrixRole is MatrixFieldRole.RowGroup or MatrixFieldRole.ColumnGroup
+            ? Math.Clamp(MatrixLevel, 0, 10)
+            : 0;
+        return new(Name, SqlTypeName, IsNullable, OrdinalPosition, NormalizeFormat(Format), groupLevel, aggregateFunction, IncludeInReport, NormalizeTextAlign(TextAlign), NormalizeDefaultLabel(DefaultLabel, Name), matrixRole, matrixLevel, NormalizeWidthPercent(WidthPercent));
     }
 
     public static string? GetDefaultFormat(string sqlTypeName)
@@ -69,6 +88,9 @@ internal sealed class DatasetFieldDraft
         var normalized = string.IsNullOrWhiteSpace(defaultLabel) ? fieldName : defaultLabel.Trim();
         return string.Equals(normalized, fieldName, StringComparison.Ordinal) ? null : normalized;
     }
+
+    private static double NormalizeWidthPercent(double widthPercent)
+        => widthPercent > 0 ? Math.Clamp(widthPercent, 1.0d, 100.0d) : 0.0d;
 
     private static string? NormalizeTextAlign(string? textAlign)
     {

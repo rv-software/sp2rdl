@@ -83,10 +83,13 @@ public partial class ReportSetupDialog : Window
     private readonly ReportOutputWriter outputWriter;
     private readonly ReportValidatorCatalog validatorCatalog;
     private readonly ReportingMetadataReader reportingMetadataReader = new();
+    private readonly ReportingMetadataWriter reportingMetadataWriter = new();
     private readonly ObservableCollection<DatasetFieldDraft> fieldDrafts = new();
     private readonly ObservableCollection<ReportParameter> reportParameters = new();
     private readonly ObservableCollection<ReportVariableConfig> reportVariables = new();
     private readonly ObservableCollection<Choice<string>> storedProcedureParameterChoices = new();
+    private readonly ObservableCollection<Choice<string>> parameterDefinitionChoices = new();
+    private readonly Dictionary<string, ReportingParameterDefinition> parameterDefinitionsByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string?> reportVariablePreviewValues = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource cts = new();
     private StoredProcedureMetadata? currentMetadata;
@@ -106,6 +109,7 @@ public partial class ReportSetupDialog : Window
         ColFieldSqlType.ItemsSource = SqlTypeNames;
         ColFieldGroupLevel.ItemsSource = GroupLevels;
         ColFieldTextAlign.ItemsSource = TextAlignOptions;
+        ColFieldMatrixRole.ItemsSource = Enum.GetValues(typeof(MatrixFieldRole));
         ColParameterSqlType.ItemsSource = SqlTypeNames;
         ColParameterControlType.ItemsSource = Enum.GetValues(typeof(ControlType));
         ColParameterCompareOperator.ItemsSource = CompareOperators;
@@ -126,6 +130,11 @@ public partial class ReportSetupDialog : Window
 
     private void GridReportParameters_RowEditEnding(object? sender, DataGridRowEditEndingEventArgs e)
     {
+        if (e.Row.Item is ReportParameter parameter)
+        {
+            EnsureReportParameterOrdinal(parameter);
+        }
+
         SortReportParametersByOrdinal();
     }
 
@@ -921,6 +930,7 @@ public partial class ReportSetupDialog : Window
         if (dialog.ShowDialog() == true)
         {
             parameter.DefaultValueSql = NormalizeOptional(dialog.SqlText);
+            ResetGeneratedDefaultDatasetReference(parameter);
         }
     }
 
@@ -964,6 +974,47 @@ public partial class ReportSetupDialog : Window
     /// </summary>
     private void ApplyParameterDefinitionsButton_Click(object sender, RoutedEventArgs e)
         => _ = ApplyParameterDefinitionsAsync();
+
+    private void LoadParameterDefinitionsButton_Click(object sender, RoutedEventArgs e)
+        => _ = LoadParameterDefinitionsAsync();
+
+    private void SaveParameterDefinitionButton_Click(object sender, RoutedEventArgs e)
+        => _ = SaveSelectedParameterDefinitionAsync();
+
+    private void SelectParameterDefinitionButton_Click(object sender, RoutedEventArgs e)
+        => _ = SelectParameterDefinitionAsync((sender as FrameworkElement)?.DataContext as ReportParameter);
+
+    /// <summary>
+    /// Adds a new report parameter row, assigns the next ordinal, and selects it for immediate editing.
+    /// </summary>
+    private void AddReportParameterButton_Click(object sender, RoutedEventArgs e)
+    {
+        CommitPendingGridEdits();
+
+        var parameter = new ReportParameter
+        {
+            OrdinalNumber = GetNextReportParameterOrdinal()
+        };
+        EnsureRuntimeParameterDefaults(parameter);
+
+        this.reportParameters.Add(parameter);
+        GridReportParameters.SelectedItem = parameter;
+        GridReportParameters.CurrentItem = parameter;
+        GridReportParameters.ScrollIntoView(parameter);
+        GridReportParameters.Items.Refresh();
+    }
+
+    /// <summary>
+    /// Moves the selected report parameter one position up and rewrites ordinals to match the grid order.
+    /// </summary>
+    private void MoveReportParameterUpButton_Click(object sender, RoutedEventArgs e)
+        => MoveSelectedReportParameter(-1);
+
+    /// <summary>
+    /// Moves the selected report parameter one position down and rewrites ordinals to match the grid order.
+    /// </summary>
+    private void MoveReportParameterDownButton_Click(object sender, RoutedEventArgs e)
+        => MoveSelectedReportParameter(1);
 
     /// <summary>
     /// Opens a picker for copying parameters from another report version.
@@ -1050,6 +1101,7 @@ public partial class ReportSetupDialog : Window
         }
 
         SortReportParametersByOrdinal();
+        UpdateParameterDefinitionChoices([]);
         GridReportParameters.Items.Refresh();
         MessageBox.Show(
             this,
@@ -1074,6 +1126,7 @@ public partial class ReportSetupDialog : Window
         }
 
         target.Name = NormalizeParameterNameForLookup(source.Name);
+        target.DefinitionName = NormalizeParameterNameForLookup(source.DefinitionName);
         target.Prompt = string.IsNullOrWhiteSpace(source.Label) ? target.Name : source.Label.Trim();
         target.ControlType = MapReportingComponentType(source.ComponentTypeName);
         target.MultiValue = target.ControlType == ControlType.MultiSelect;
@@ -1115,6 +1168,7 @@ public partial class ReportSetupDialog : Window
             {
                 target.CompareToParameterName = dependsOnName;
                 target.CompareOperator = NormalizeOptional(dependency.CompareOperator ?? string.Empty);
+                target.ComparisonValueTemplate = NormalizeOptional(dependency.ComparisonValueTemplate ?? string.Empty);
                 continue;
             }
 
@@ -1181,20 +1235,21 @@ public partial class ReportSetupDialog : Window
 
         try
         {
-            var definitions = await this.reportingMetadataReader.ReadParameterDefinitionsAsync(connectionString, this.cts.Token);
+            var definitions = await ReadReportingParameterDefinitionsAsync();
+            UpdateParameterDefinitionChoices(definitions.Values);
             var appliedCount = 0;
             var missingCount = 0;
 
             foreach (var parameter in currentParameters)
             {
-                var key = NormalizeParameterNameForLookup(parameter.Name);
+                var key = NormalizeParameterNameForLookup(string.IsNullOrWhiteSpace(parameter.DefinitionName) ? parameter.Name : parameter.DefinitionName);
                 if (!definitions.TryGetValue(key, out var definition))
                 {
                     missingCount++;
                     continue;
                 }
 
-                ApplyReportingParameterDefinition(parameter, definition);
+                ApplyReportingParameterDefinition(parameter, definition, initializeName: false);
                 appliedCount++;
             }
 
@@ -1213,16 +1268,332 @@ public partial class ReportSetupDialog : Window
     }
 
     /// <summary>
+    /// Loads reusable parameter definitions into the Report params Definition dropdown.
+    /// </summary>
+    private async Task LoadParameterDefinitionsAsync()
+    {
+        CommitPendingGridEdits();
+
+        try
+        {
+            var definitions = await ReadReportingParameterDefinitionsAsync();
+            UpdateParameterDefinitionChoices(definitions.Values);
+            GridReportParameters.Items.Refresh();
+            MessageBox.Show(this, $"Loaded {definitions.Count} parameter definition(s).", "Load definitions", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
+        {
+            MessageBox.Show(this, $"Could not read Reporting.ParameterDefinition rows.{Environment.NewLine}{ex.Message}", "Load definitions", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Saves the selected report parameter row as a reusable Reporting.ParameterDefinition and refreshes the definition list.
+    /// </summary>
+    private async Task SaveSelectedParameterDefinitionAsync()
+    {
+        CommitPendingGridEdits();
+
+        if (GridReportParameters.SelectedItem is not ReportParameter parameter)
+        {
+            MessageBox.Show(this, "Select one report parameter row first.", "Save definition", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var definitionName = NormalizeParameterNameForLookup(string.IsNullOrWhiteSpace(parameter.DefinitionName) ? parameter.Name : parameter.DefinitionName);
+        if (string.IsNullOrWhiteSpace(definitionName))
+        {
+            MessageBox.Show(this, "Parameter Name or Definition is required.", "Save definition", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var connectionString = TxtReportingConnectionString.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            MessageBox.Show(this, "Set the Reporting connection on the Output tab first.", "Save definition", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            parameter.DefinitionName = definitionName;
+            await this.reportingMetadataWriter.SaveParameterDefinitionAsync(connectionString, parameter, this.cts.Token);
+
+            var definitions = await ReadReportingParameterDefinitionsAsync();
+            UpdateParameterDefinitionChoices(definitions.Values);
+            GridReportParameters.Items.Refresh();
+
+            MessageBox.Show(this, $"Saved definition '{definitionName}'. Definitions were reloaded.", "Save definition", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
+        {
+            MessageBox.Show(this, $"Could not save Reporting.ParameterDefinition.{Environment.NewLine}{ex.Message}", "Save definition", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Opens a modal picker and applies the selected reusable parameter definition to the target row.
+    /// </summary>
+    private async Task SelectParameterDefinitionAsync(ReportParameter? parameter)
+    {
+        CommitPendingGridEdits();
+
+        if (parameter is null)
+        {
+            MessageBox.Show(this, "Select one report parameter row first.", "Select definition", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (this.parameterDefinitionsByName.Count == 0)
+        {
+            try
+            {
+                var definitions = await ReadReportingParameterDefinitionsAsync();
+                UpdateParameterDefinitionChoices(definitions.Values);
+            }
+            catch (Exception ex) when (ex is SqlException or InvalidOperationException)
+            {
+                MessageBox.Show(this, $"Could not read Reporting.ParameterDefinition rows.{Environment.NewLine}{ex.Message}", "Select definition", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+        }
+
+        EnsureReportParameterOrdinal(parameter);
+
+        var dialog = new SelectParameterDefinitionDialog(this.parameterDefinitionsByName.Values, parameter.DefinitionName, Resources)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() != true || dialog.SelectedDefinition is null)
+        {
+            return;
+        }
+
+        ApplyReportingParameterDefinition(parameter, dialog.SelectedDefinition, initializeName: true);
+        GridReportParameters.Items.Refresh();
+    }
+
+    /// <summary>
+    /// Gives a newly added report parameter the next visible ordinal before sorting or applying definitions.
+    /// </summary>
+    private void EnsureReportParameterOrdinal(ReportParameter parameter)
+    {
+        if (parameter.OrdinalNumber > 0)
+        {
+            return;
+        }
+
+        parameter.OrdinalNumber = GetNextReportParameterOrdinal(parameter);
+    }
+
+    /// <summary>
+    /// Calculates the next report-parameter ordinal while ignoring the row currently being initialized.
+    /// </summary>
+    private int GetNextReportParameterOrdinal(ReportParameter? excludedParameter = null)
+    {
+        var maxOrdinal = this.reportParameters
+            .Where(parameter => !ReferenceEquals(parameter, excludedParameter))
+            .Select(parameter => parameter.OrdinalNumber)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        return Math.Max(1, maxOrdinal + 1);
+    }
+
+    /// <summary>
+    /// Reorders the selected report parameter and keeps Ordinal values synchronized with the displayed order.
+    /// </summary>
+    private void MoveSelectedReportParameter(int direction)
+    {
+        CommitPendingGridEdits();
+        if (GridReportParameters.SelectedItem is not ReportParameter parameter)
+        {
+            MessageBox.Show(this, "Select one report parameter row first.", "Move parameter", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        SortReportParametersByOrdinal();
+        var currentIndex = this.reportParameters.IndexOf(parameter);
+        var targetIndex = currentIndex + Math.Sign(direction);
+        if (currentIndex < 0 || targetIndex < 0 || targetIndex >= this.reportParameters.Count)
+        {
+            return;
+        }
+
+        if (!CanMoveReportParameter(currentIndex, targetIndex, out var validationMessage))
+        {
+            MessageBox.Show(this, validationMessage, "Move parameter", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        this.reportParameters.Move(currentIndex, targetIndex);
+        RenumberReportParameterOrdinals();
+        GridReportParameters.SelectedItem = parameter;
+        GridReportParameters.CurrentItem = parameter;
+        GridReportParameters.ScrollIntoView(parameter);
+        GridReportParameters.Items.Refresh();
+    }
+
+    /// <summary>
+    /// Checks whether moving a parameter would keep dependency and comparison parameters before their consumers.
+    /// </summary>
+    private bool CanMoveReportParameter(int currentIndex, int targetIndex, out string validationMessage)
+    {
+        var proposedOrder = this.reportParameters.ToList();
+        var parameter = proposedOrder[currentIndex];
+        proposedOrder.RemoveAt(currentIndex);
+        proposedOrder.Insert(targetIndex, parameter);
+
+        if (TryFindParameterOrderViolation(proposedOrder, out var dependentName, out var dependencyName))
+        {
+            validationMessage = $"Cannot move '{dependentName}' before '{dependencyName}'. Parameters must stay below the parameters they depend on.";
+            return false;
+        }
+
+        validationMessage = string.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// Finds the first dependency ordering violation in a proposed report-parameter order.
+    /// </summary>
+    private static bool TryFindParameterOrderViolation(
+        IReadOnlyList<ReportParameter> proposedOrder,
+        out string dependentName,
+        out string dependencyName)
+    {
+        var indexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < proposedOrder.Count; index++)
+        {
+            var name = NormalizeParameterNameForLookup(proposedOrder[index].Name);
+            if (!string.IsNullOrWhiteSpace(name) && !indexByName.ContainsKey(name))
+            {
+                indexByName[name] = index;
+            }
+        }
+
+        for (var index = 0; index < proposedOrder.Count; index++)
+        {
+            var parameter = proposedOrder[index];
+            foreach (var dependency in GetReportParameterDependencyNames(parameter))
+            {
+                if (indexByName.TryGetValue(dependency, out var dependencyIndex) && dependencyIndex >= index)
+                {
+                    dependentName = GetDisplayParameterName(parameter);
+                    dependencyName = dependency;
+                    return true;
+                }
+            }
+        }
+
+        dependentName = string.Empty;
+        dependencyName = string.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// Returns all report parameters that must appear before the supplied parameter.
+    /// </summary>
+    private static IEnumerable<string> GetReportParameterDependencyNames(ReportParameter parameter)
+    {
+        foreach (var dependency in ParseDependencyNames(parameter.DependsOnParameterName))
+        {
+            yield return dependency;
+        }
+
+        var compareTo = NormalizeParameterNameForLookup(parameter.CompareToParameterName);
+        if (!string.IsNullOrWhiteSpace(compareTo))
+        {
+            yield return compareTo;
+        }
+    }
+
+    /// <summary>
+    /// Provides a readable parameter name for validation messages.
+    /// </summary>
+    private static string GetDisplayParameterName(ReportParameter parameter)
+        => NormalizeParameterNameForLookup(parameter.Name)
+            ?? NormalizeParameterNameForLookup(parameter.DefinitionName)
+            ?? "(unnamed parameter)";
+
+    /// <summary>
+    /// Rewrites report-parameter ordinals sequentially so the persisted order matches the grid order.
+    /// </summary>
+    private void RenumberReportParameterOrdinals()
+    {
+        for (var index = 0; index < this.reportParameters.Count; index++)
+        {
+            this.reportParameters[index].OrdinalNumber = index + 1;
+        }
+    }
+
+    /// <summary>
+    /// Reads Reporting.ParameterDefinition rows using the Output tab Reporting connection.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, ReportingParameterDefinition>> ReadReportingParameterDefinitionsAsync()
+    {
+        var connectionString = TxtReportingConnectionString.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException("Set the Reporting connection on the Output tab first.");
+        }
+
+        return await this.reportingMetadataReader.ReadParameterDefinitionsAsync(connectionString, this.cts.Token);
+    }
+
+    /// <summary>
     /// Copies reusable definition metadata onto one report parameter while preserving report-specific settings.
     /// </summary>
-    private static void ApplyReportingParameterDefinition(ReportParameter parameter, ReportingParameterDefinition definition)
+    private static void ApplyReportingParameterDefinition(ReportParameter parameter, ReportingParameterDefinition definition, bool initializeName)
     {
+        parameter.DefinitionName = NormalizeParameterNameForLookup(definition.Name);
+        if (initializeName && string.IsNullOrWhiteSpace(parameter.Name))
+        {
+            parameter.Name = parameter.DefinitionName;
+        }
+
         parameter.Prompt = string.IsNullOrWhiteSpace(definition.Label) ? parameter.Prompt : definition.Label.Trim();
         parameter.ControlType = MapReportingComponentType(definition.ComponentTypeName);
         parameter.EntityKey = NormalizeOptional(definition.EntityKey ?? string.Empty);
         parameter.ValueFieldTemplate = NormalizeOptional(definition.ValueFieldTemplate ?? string.Empty);
         parameter.DisplayFieldTemplate = NormalizeOptional(definition.DisplayFieldTemplate ?? string.Empty);
         parameter.DefaultValueExpression = NormalizeOptional(definition.InitialValue ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Refreshes the dropdown choices used to bind report parameters to reusable Reporting definitions.
+    /// </summary>
+    private void UpdateParameterDefinitionChoices(IEnumerable<ReportingParameterDefinition> definitions)
+    {
+        this.parameterDefinitionsByName.Clear();
+        var selectedValues = this.reportParameters
+            .Select(parameter => NormalizeParameterNameForLookup(parameter.DefinitionName))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        this.parameterDefinitionChoices.Clear();
+        this.parameterDefinitionChoices.Add(new Choice<string>(string.Empty, string.Empty));
+
+        foreach (var definition in definitions.OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var value = NormalizeParameterNameForLookup(definition.Name);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            var label = string.IsNullOrWhiteSpace(definition.EntityKey)
+                ? value
+                : $"{value} | {definition.EntityKey}";
+            this.parameterDefinitionChoices.Add(new Choice<string>(value, label));
+            this.parameterDefinitionsByName[value] = definition;
+            selectedValues.Remove(value);
+        }
+
+        foreach (var selectedValue in selectedValues.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+        {
+            this.parameterDefinitionChoices.Add(new Choice<string>(selectedValue, selectedValue));
+        }
     }
 
     /// <summary>
@@ -2782,9 +3153,16 @@ public partial class ReportSetupDialog : Window
         return int.TryParse(tag, out var count) ? Math.Clamp(count, 1, 3) : 1;
     }
 
+    /// <summary>
+    /// Reads tablix layout/style options from the Body / Tablix tab.
+    /// </summary>
     private TablixStyleConfig BuildTablixStyle()
         => new()
         {
+            GroupRenderMode = ReadEnumComboBox(CmbGroupRenderMode, GroupRenderMode.Band),
+            MatrixExpectedColumnCount = Math.Clamp(ReadNonNegativeInt(TxtMatrixExpectedColumnCount.Text, 6), 1, 50),
+            ShowTabularHorizontalSubtotals = ChkTabularHorizontalSubtotals.IsChecked == true,
+            ShowTabularHorizontalGrandTotal = ChkTabularHorizontalGrandTotal.IsChecked == true,
             WidthPercent = ReadPercentOrDefault(TxtTablixWidthPercent.Text, 100.0d),
             ShadeBaseColor = NormalizeHexColor(TxtTablixShadeBaseColor.Text, "#EDEDED"),
             BorderColor = NormalizeHexColor(TxtTablixBorderColor.Text, "#A6A6A6"),
@@ -3032,8 +3410,15 @@ WHEN NOT MATCHED THEN
     private static string QuoteSqlIdentifier(string value)
         => "[" + (value ?? string.Empty).Replace("]", "]]", StringComparison.Ordinal) + "]";
 
+    /// <summary>
+    /// Applies saved tablix layout/style options to the Body / Tablix tab.
+    /// </summary>
     private void ApplyTablixStyle(TablixStyleConfig style)
     {
+        SetEnumComboBox(CmbGroupRenderMode, style.GroupRenderMode);
+        TxtMatrixExpectedColumnCount.Text = Math.Clamp(style.MatrixExpectedColumnCount <= 0 ? 6 : style.MatrixExpectedColumnCount, 1, 50).ToString(CultureInfo.CurrentCulture);
+        ChkTabularHorizontalSubtotals.IsChecked = style.ShowTabularHorizontalSubtotals;
+        ChkTabularHorizontalGrandTotal.IsChecked = style.ShowTabularHorizontalGrandTotal;
         TxtTablixWidthPercent.Text = ToUiNumber(style.WidthPercent <= 0 ? 100.0d : Math.Clamp(style.WidthPercent, 1.0d, 100.0d));
         TxtTablixShadeBaseColor.Text = NormalizeHexColor(style.ShadeBaseColor, "#EDEDED");
         TxtTablixBorderColor.Text = NormalizeHexColor(style.BorderColor, "#A6A6A6");
@@ -3250,6 +3635,7 @@ WHEN NOT MATCHED THEN
             this.reportParameters.Add(parameter);
         }
 
+        UpdateParameterDefinitionChoices([]);
     }
 
     private void UpdateStoredProcedureParameterChoices(IEnumerable<SpParameter> parameters)
@@ -3340,6 +3726,7 @@ WHEN NOT MATCHED THEN
         foreach (var parameter in parameterList)
         {
             parameter.Name = parameter.Name.Trim().TrimStart('@');
+            parameter.DefinitionName = NormalizeOptional(parameter.DefinitionName ?? string.Empty)?.TrimStart('@');
             parameter.Prompt = string.IsNullOrWhiteSpace(parameter.Prompt)
                 ? parameter.Name
                 : parameter.Prompt.Trim();
@@ -3350,6 +3737,11 @@ WHEN NOT MATCHED THEN
             parameter.DefaultValueSql = NormalizeOptional(parameter.DefaultValueSql ?? string.Empty);
             parameter.DefaultValueDatasetName = NormalizeOptional(parameter.DefaultValueDatasetName ?? string.Empty);
             parameter.DefaultValueField = NormalizeOptional(parameter.DefaultValueField ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(parameter.DefaultValueSql))
+            {
+                ResetGeneratedDefaultDatasetReference(parameter);
+            }
+
             parameter.DisplayFormat = NormalizeOptional(parameter.DisplayFormat ?? string.Empty);
             parameter.LookupSql = NormalizeOptional(parameter.LookupSql ?? string.Empty);
             parameter.DependsOnParameterName = NormalizeDependencyList(parameter.DependsOnParameterName, parameter.Name);
@@ -3357,6 +3749,7 @@ WHEN NOT MATCHED THEN
             parameter.BindToDatasetParameterName = NormalizeOptional(parameter.BindToDatasetParameterName ?? string.Empty)?.TrimStart('@');
             parameter.CompareToParameterName = NormalizeOptional(parameter.CompareToParameterName ?? string.Empty)?.TrimStart('@');
             parameter.CompareOperator = NormalizeOptional(parameter.CompareOperator ?? string.Empty);
+            parameter.ComparisonValueTemplate = NormalizeOptional(parameter.ComparisonValueTemplate ?? string.Empty);
 
             if (string.Equals(parameter.CompareToParameterName, parameter.Name, StringComparison.OrdinalIgnoreCase))
             {
@@ -3366,6 +3759,7 @@ WHEN NOT MATCHED THEN
             if (string.IsNullOrWhiteSpace(parameter.CompareToParameterName))
             {
                 parameter.CompareOperator = null;
+                parameter.ComparisonValueTemplate = null;
             }
             else if (string.IsNullOrWhiteSpace(parameter.CompareOperator) || !CompareOperators.Contains(parameter.CompareOperator))
             {
@@ -3409,6 +3803,7 @@ WHEN NOT MATCHED THEN
             {
                 parameter.CompareToParameterName = null;
                 parameter.CompareOperator = null;
+                parameter.ComparisonValueTemplate = null;
             }
         }
     }
@@ -3463,11 +3858,18 @@ WHEN NOT MATCHED THEN
         }
     }
 
-
+    /// <summary>
+    /// Normalizes dataset column drafts before they are persisted or used by the RDL builder.
+    /// </summary>
     private void NormalizeFieldDrafts()
     {
         foreach (var field in this.fieldDrafts)
         {
+            field.WidthPercent = field.WidthPercent > 0 ? Math.Clamp(field.WidthPercent, 1.0d, 100.0d) : 0.0d;
+            field.MatrixRole = Enum.IsDefined(field.MatrixRole) ? field.MatrixRole : MatrixFieldRole.None;
+            field.MatrixLevel = field.MatrixRole is MatrixFieldRole.RowGroup or MatrixFieldRole.ColumnGroup
+                ? Math.Clamp(field.MatrixLevel, 0, 10)
+                : 0;
             field.GroupLevel = field.GroupLevel is >= 1 and <= 4 ? field.GroupLevel : 0;
             if (field.GroupLevel > 0)
             {
@@ -3554,6 +3956,15 @@ WHEN NOT MATCHED THEN
         parameter.DependencyFilterPath = NormalizeOptional(parameter.DependencyFilterPath ?? string.Empty);
     }
 
+    /// <summary>
+    /// Clears generated default dataset metadata when the parameter no longer has default SQL.
+    /// </summary>
+    private static void ResetGeneratedDefaultDatasetReference(ReportParameter parameter)
+    {
+        parameter.DefaultValueDatasetName = null;
+        parameter.DefaultValueField = null;
+    }
+
     private static void ApplyAuxiliaryParameterDatasets(ReportModel model)
     {
         var generatedDatasetNames = new HashSet<string>(
@@ -3584,6 +3995,12 @@ WHEN NOT MATCHED THEN
                     ],
                     ParameterBindings = BuildLookupParameterBindings(parameter)
                 });
+            }
+
+            if (string.IsNullOrWhiteSpace(parameter.DefaultValueSql))
+            {
+                ResetGeneratedDefaultDatasetReference(parameter);
+                continue;
             }
 
             if (!string.IsNullOrWhiteSpace(parameter.DefaultValueSql))

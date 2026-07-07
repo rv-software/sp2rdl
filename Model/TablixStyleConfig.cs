@@ -1,7 +1,22 @@
 namespace sp2rdlGenExtension.Model;
 
+internal enum GroupRenderMode
+{
+    Band,
+    TabularHorizontal,
+    MatrixCrosstab
+}
+
 internal sealed class TablixStyleConfig
 {
+    public GroupRenderMode GroupRenderMode { get; set; } = GroupRenderMode.Band;
+
+    public int MatrixExpectedColumnCount { get; set; } = 6;
+
+    public bool ShowTabularHorizontalSubtotals { get; set; } = true;
+
+    public bool ShowTabularHorizontalGrandTotal { get; set; } = true;
+
     public double WidthPercent { get; set; } = 100.0d;
 
     public string ShadeBaseColor { get; set; } = "#EDEDED";

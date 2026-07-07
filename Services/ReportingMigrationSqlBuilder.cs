@@ -187,6 +187,10 @@ internal static class ReportingMigrationSqlBuilder
     private static void AppendParameter(StringBuilder builder, ReportParameter parameter)
     {
         var parameterName = parameter.Name.Trim().TrimStart('@');
+        var definitionName = GetDefinitionName(parameter);
+        var nameOverride = string.Equals(parameterName, definitionName, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : parameterName;
         var componentTypeName = MapComponentTypeName(parameter.ControlType);
         var ordinal = parameter.OrdinalNumber <= 0 ? 1 : parameter.OrdinalNumber;
         var label = string.IsNullOrWhiteSpace(parameter.Prompt) ? parameterName : parameter.Prompt.Trim();
@@ -204,7 +208,7 @@ internal static class ReportingMigrationSqlBuilder
         builder.AppendLine($"    THROW 51001, 'Reporting.ComponentType row with Name = {EscapeSql(componentTypeName)} was not found.', 1;");
         builder.AppendLine();
         builder.AppendLine("MERGE [Reporting].[ParameterDefinition] AS T");
-        builder.AppendLine($"USING (VALUES (N'{EscapeSql(parameterName)}', N'{EscapeSql(label)}', @ComponentTypeId, {RequiredSqlLiteral(parameter.EntityKey)}, {RequiredSqlLiteral(parameter.ValueFieldTemplate)}, {RequiredSqlLiteral(parameter.DisplayFieldTemplate)}, {SqlLiteral(initialValue)}, {defaultSortOrder}))");
+        builder.AppendLine($"USING (VALUES (N'{EscapeSql(definitionName)}', N'{EscapeSql(label)}', @ComponentTypeId, {RequiredSqlLiteral(parameter.EntityKey)}, {RequiredSqlLiteral(parameter.ValueFieldTemplate)}, {RequiredSqlLiteral(parameter.DisplayFieldTemplate)}, {SqlLiteral(initialValue)}, {defaultSortOrder}))");
         builder.AppendLine("    AS S([Name], Label, ComponentTypeId, EntityKey, ValueFieldTemplate, DisplayFieldTemplate, InitialValue, DefaultSortOrder)");
         builder.AppendLine("   ON T.[Name] = S.[Name]");
         builder.AppendLine("WHEN MATCHED THEN");
@@ -218,13 +222,14 @@ internal static class ReportingMigrationSqlBuilder
         builder.AppendLine("    INSERT ([Name], Label, ComponentTypeId, EntityKey, ValueFieldTemplate, DisplayFieldTemplate, InitialValue, DefaultSortOrder, CreatedBy, CreatedAt)");
         builder.AppendLine("    VALUES (S.[Name], S.Label, S.ComponentTypeId, S.EntityKey, S.ValueFieldTemplate, S.DisplayFieldTemplate, S.InitialValue, S.DefaultSortOrder, @AuditUser, @Now);");
         builder.AppendLine();
-        builder.AppendLine("SELECT @ParameterDefinitionId = Id FROM [Reporting].[ParameterDefinition] WHERE [Name] = " + SqlLiteral(parameterName) + ";");
+        builder.AppendLine("SELECT @ParameterDefinitionId = Id FROM [Reporting].[ParameterDefinition] WHERE [Name] = " + SqlLiteral(definitionName) + ";");
         builder.AppendLine();
         builder.AppendLine("MERGE [Reporting].[UiParameter] AS T");
         builder.AppendLine("USING (");
         builder.AppendLine("    SELECT");
         builder.AppendLine("        @VersionId AS VersionId,");
         builder.AppendLine("        @ParameterDefinitionId AS ParameterDefinitionId,");
+        builder.AppendLine($"        {SqlLiteral(nameOverride)} AS NameOverride,");
         builder.AppendLine($"        {ordinal} AS CreationOrder,");
         builder.AppendLine($"        {SqlLiteral(initialValue)} AS InitialValueOverride,");
         builder.AppendLine($"        CASE WHEN ISNULL(PD.Label, N'') <> N'{EscapeSql(label)}' THEN N'{EscapeSql(label)}' ELSE NULL END AS LabelOverride,");
@@ -240,8 +245,10 @@ internal static class ReportingMigrationSqlBuilder
         builder.AppendLine(") AS S");
         builder.AppendLine("   ON T.VersionId = S.VersionId");
         builder.AppendLine("  AND T.ParameterDefinitionId = S.ParameterDefinitionId");
+        builder.AppendLine("  AND ISNULL(T.NameOverride, '') = ISNULL(S.NameOverride, '')");
         builder.AppendLine("WHEN MATCHED THEN");
         builder.AppendLine("    UPDATE SET");
+        builder.AppendLine("        NameOverride = S.NameOverride,");
         builder.AppendLine("        CreationOrder = S.CreationOrder,");
         builder.AppendLine("        InitialValueOverride = S.InitialValueOverride,");
         builder.AppendLine("        LabelOverride = S.LabelOverride,");
@@ -255,13 +262,14 @@ internal static class ReportingMigrationSqlBuilder
         builder.AppendLine("        LastModifiedBy = @AuditUser,");
         builder.AppendLine("        LastModifiedAt = @Now");
         builder.AppendLine("WHEN NOT MATCHED THEN");
-        builder.AppendLine("    INSERT (VersionId, ParameterDefinitionId, CreationOrder, InitialValueOverride, LabelOverride, DisplayFieldTemplateOverride, IsRequired, IsAdditional, DefaultSortOrderOverride, IsVisible, StaticValues, RuntimeSettings, CreatedBy, CreatedAt)");
-        builder.AppendLine("    VALUES (S.VersionId, S.ParameterDefinitionId, S.CreationOrder, S.InitialValueOverride, S.LabelOverride, S.DisplayFieldTemplateOverride, S.IsRequired, S.IsAdditional, S.DefaultSortOrderOverride, S.IsVisible, S.StaticValues, S.RuntimeSettings, @AuditUser, @Now);");
+        builder.AppendLine("    INSERT (VersionId, ParameterDefinitionId, NameOverride, CreationOrder, InitialValueOverride, LabelOverride, DisplayFieldTemplateOverride, IsRequired, IsAdditional, DefaultSortOrderOverride, IsVisible, StaticValues, RuntimeSettings, CreatedBy, CreatedAt)");
+        builder.AppendLine("    VALUES (S.VersionId, S.ParameterDefinitionId, S.NameOverride, S.CreationOrder, S.InitialValueOverride, S.LabelOverride, S.DisplayFieldTemplateOverride, S.IsRequired, S.IsAdditional, S.DefaultSortOrderOverride, S.IsVisible, S.StaticValues, S.RuntimeSettings, @AuditUser, @Now);");
         builder.AppendLine();
         builder.AppendLine("SELECT @UiParameterId = Id");
-        builder.AppendLine("FROM [Reporting].[UiParameter]");
-        builder.AppendLine("WHERE VersionId = @VersionId");
-        builder.AppendLine("  AND ParameterDefinitionId = @ParameterDefinitionId;");
+        builder.AppendLine("FROM [Reporting].[UiParameter] AS UP");
+        builder.AppendLine("WHERE UP.VersionId = @VersionId");
+        builder.AppendLine("  AND UP.ParameterDefinitionId = @ParameterDefinitionId");
+        builder.AppendLine($"  AND ISNULL(UP.NameOverride, '') = ISNULL({SqlLiteral(nameOverride)}, '');");
         builder.AppendLine();
     }
 
@@ -273,12 +281,12 @@ internal static class ReportingMigrationSqlBuilder
         var parameterName = parameter.Name.Trim().TrimStart('@');
         foreach (var dependencyName in ParseDependencyNames(parameter.DependsOnParameterName))
         {
-            AppendDependency(builder, parameterName, dependencyName, compareParams: false, compareOperator: null, parameter.DependencyFilterPath);
+            AppendDependency(builder, parameterName, dependencyName, compareParams: false, compareOperator: null, parameter.DependencyFilterPath, comparisonValueTemplate: null);
         }
 
         if (!string.IsNullOrWhiteSpace(parameter.CompareToParameterName))
         {
-            AppendDependency(builder, parameterName, parameter.CompareToParameterName.Trim().TrimStart('@'), compareParams: true, parameter.CompareOperator, null);
+            AppendDependency(builder, parameterName, parameter.CompareToParameterName.Trim().TrimStart('@'), compareParams: true, parameter.CompareOperator, null, parameter.ComparisonValueTemplate);
         }
     }
 
@@ -291,7 +299,8 @@ internal static class ReportingMigrationSqlBuilder
         string dependsOnParameterName,
         bool compareParams,
         string? compareOperator,
-        string? dependencyFilterPath)
+        string? dependencyFilterPath,
+        string? comparisonValueTemplate)
     {
         if (string.IsNullOrWhiteSpace(dependsOnParameterName))
         {
@@ -307,13 +316,13 @@ internal static class ReportingMigrationSqlBuilder
         builder.AppendLine("FROM [Reporting].[UiParameter] AS UP");
         builder.AppendLine("INNER JOIN [Reporting].[ParameterDefinition] AS PD ON PD.Id = UP.ParameterDefinitionId");
         builder.AppendLine("WHERE UP.VersionId = @VersionId");
-        builder.AppendLine($"  AND PD.[Name] = N'{EscapeSql(parameterName)}';");
+        builder.AppendLine($"  AND COALESCE(NULLIF(UP.NameOverride, ''), PD.[Name]) = N'{EscapeSql(parameterName)}';");
         builder.AppendLine();
         builder.AppendLine("SELECT @DependsOnUiParameterId = UP.Id");
         builder.AppendLine("FROM [Reporting].[UiParameter] AS UP");
         builder.AppendLine("INNER JOIN [Reporting].[ParameterDefinition] AS PD ON PD.Id = UP.ParameterDefinitionId");
         builder.AppendLine("WHERE UP.VersionId = @VersionId");
-        builder.AppendLine($"  AND PD.[Name] = N'{EscapeSql(dependsOnParameterName)}';");
+        builder.AppendLine($"  AND COALESCE(NULLIF(UP.NameOverride, ''), PD.[Name]) = N'{EscapeSql(dependsOnParameterName)}';");
         builder.AppendLine();
         builder.AppendLine("IF @DependencyUiParameterId IS NULL OR @DependsOnUiParameterId IS NULL");
         builder.AppendLine($"    THROW 51002, 'UiParameter dependency could not be resolved: {EscapeSql(parameterName)} -> {EscapeSql(dependsOnParameterName)}.', 1;");
@@ -329,8 +338,8 @@ internal static class ReportingMigrationSqlBuilder
         }
 
         builder.AppendLine("MERGE [Reporting].[UiParameterDependency] AS T");
-        builder.AppendLine($"USING (VALUES (@DependencyUiParameterId, @DependsOnUiParameterId, {BitLiteral(compareParams)}, @CompareOperatorId, {SqlLiteral(dependencyFilterPath)}))");
-        builder.AppendLine("    AS S(UiParameterId, DependsOnUiParameterId, CompareParams, CompareOperatorId, DependencyFilterPath)");
+        builder.AppendLine($"USING (VALUES (@DependencyUiParameterId, @DependsOnUiParameterId, {BitLiteral(compareParams)}, @CompareOperatorId, {SqlLiteral(dependencyFilterPath)}, {SqlLiteral(compareParams ? comparisonValueTemplate : null)}))");
+        builder.AppendLine("    AS S(UiParameterId, DependsOnUiParameterId, CompareParams, CompareOperatorId, DependencyFilterPath, ComparisonValueTemplate)");
         builder.AppendLine("   ON T.UiParameterId = S.UiParameterId");
         builder.AppendLine("  AND T.DependsOnUiParameterId = S.DependsOnUiParameterId");
         builder.AppendLine("  AND T.CompareParams = S.CompareParams");
@@ -338,12 +347,24 @@ internal static class ReportingMigrationSqlBuilder
         builder.AppendLine("    UPDATE SET");
         builder.AppendLine("        CompareOperatorId = S.CompareOperatorId,");
         builder.AppendLine("        DependencyFilterPath = S.DependencyFilterPath,");
+        builder.AppendLine("        ComparisonValueTemplate = S.ComparisonValueTemplate,");
         builder.AppendLine("        LastModifiedBy = @AuditUser,");
         builder.AppendLine("        LastModifiedAt = @Now");
         builder.AppendLine("WHEN NOT MATCHED THEN");
-        builder.AppendLine("    INSERT (UiParameterId, DependsOnUiParameterId, CompareParams, CompareOperatorId, DependencyFilterPath, CreatedBy, CreatedAt)");
-        builder.AppendLine("    VALUES (S.UiParameterId, S.DependsOnUiParameterId, S.CompareParams, S.CompareOperatorId, S.DependencyFilterPath, @AuditUser, @Now);");
+        builder.AppendLine("    INSERT (UiParameterId, DependsOnUiParameterId, CompareParams, CompareOperatorId, DependencyFilterPath, ComparisonValueTemplate, CreatedBy, CreatedAt)");
+        builder.AppendLine("    VALUES (S.UiParameterId, S.DependsOnUiParameterId, S.CompareParams, S.CompareOperatorId, S.DependencyFilterPath, S.ComparisonValueTemplate, @AuditUser, @Now);");
         builder.AppendLine();
+    }
+
+    /// <summary>
+    /// Returns the reusable Reporting.ParameterDefinition name for a report parameter.
+    /// </summary>
+    private static string GetDefinitionName(ReportParameter parameter)
+    {
+        var definitionName = parameter.DefinitionName?.Trim().TrimStart('@');
+        return string.IsNullOrWhiteSpace(definitionName)
+            ? parameter.Name.Trim().TrimStart('@')
+            : definitionName;
     }
 
     /// <summary>

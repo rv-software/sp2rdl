@@ -1,0 +1,75 @@
+<Window x:Class="sp2rdlGenExtension.Dialogs.SelectParameterDefinitionDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select parameter definition"
+        Width="760"
+        Height="520"
+        MinWidth="640"
+        MinHeight="420"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource DialogBackgroundBrush}"
+        Foreground="{DynamicResource DialogPrimaryTextBrush}">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="10"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="10"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="12"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="Select parameter definition"
+                   FontSize="18"
+                   FontWeight="SemiBold"
+                   Foreground="{DynamicResource DialogPrimaryTextBrush}"/>
+
+        <TextBox Grid.Row="2"
+                 x:Name="TxtFilter"
+                 Style="{StaticResource FieldBox}"
+                 Height="30"
+                 VerticalContentAlignment="Center"
+                 TextChanged="FilterTextBox_TextChanged"/>
+
+        <DataGrid Grid.Row="4"
+                  x:Name="GridDefinitions"
+                  Style="{StaticResource ReadableGrid}"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  SelectionMode="Single"
+                  MouseDoubleClick="DefinitionsGrid_MouseDoubleClick">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="150"/>
+                <DataGridTextColumn Header="Label" Binding="{Binding Label}" Width="170"/>
+                <DataGridTextColumn Header="Control" Binding="{Binding ComponentTypeName}" Width="105"/>
+                <DataGridTextColumn Header="Entity key" Binding="{Binding EntityKey}" Width="170"/>
+                <DataGridTextColumn Header="Display template" Binding="{Binding DisplayFieldTemplate}" Width="*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <TextBlock Grid.Row="6"
+                   x:Name="TxtStatus"
+                   HorizontalAlignment="Left"
+                   VerticalAlignment="Center"
+                   Foreground="{DynamicResource DialogSecondaryTextBrush}"/>
+
+        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="OK"
+                    Width="90"
+                    Height="32"
+                    Margin="0,0,8,0"
+                    Background="{DynamicResource DialogButtonBackgroundBrush}"
+                    Style="{StaticResource ActionBtn}"
+                    Click="OkButton_Click"/>
+            <Button Content="Cancel"
+                    Width="90"
+                    Height="32"
+                    Background="{DynamicResource DialogCancelButtonBackgroundBrush}"
+                    Style="{StaticResource ActionBtn}"
+                    Click="CancelButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

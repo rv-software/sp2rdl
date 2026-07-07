@@ -274,9 +274,12 @@
                                 <DataGridComboBoxColumn x:Name="ColFieldSqlType" Header="SqlTypeName" SelectedItemBinding="{Binding SqlTypeName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="1.1*"/>
                                 <DataGridCheckBoxColumn Header="Nullable" Binding="{Binding IsNullable, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="0.7*"/>
                                 <DataGridTextColumn Header="Ordinal" Binding="{Binding OrdinalPosition, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" EditingElementStyle="{StaticResource ReadableGridTextBox}" Width="0.65*"/>
+                                <DataGridTextColumn Header="Width %" Binding="{Binding WidthPercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, StringFormat={}{0:0.##}}" EditingElementStyle="{StaticResource ReadableGridTextBox}" Width="78"/>
                                 <DataGridTextColumn Header="Format" Binding="{Binding Format, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" EditingElementStyle="{StaticResource ReadableGridTextBox}" Width="1.05*"/>
                                 <DataGridComboBoxColumn x:Name="ColFieldTextAlign" Header="Align" SelectedItemBinding="{Binding TextAlign, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="80"/>
                                 <DataGridComboBoxColumn x:Name="ColFieldGroupLevel" Header="Group" SelectedValueBinding="{Binding GroupLevel, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Value" DisplayMemberPath="Label" Width="70"/>
+                                <DataGridComboBoxColumn x:Name="ColFieldMatrixRole" Header="Matrix role" SelectedItemBinding="{Binding MatrixRole, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="105"/>
+                                <DataGridTextColumn Header="Matrix level" Binding="{Binding MatrixLevel, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" EditingElementStyle="{StaticResource ReadableGridTextBox}" Width="88"/>
                                 <DataGridTemplateColumn Header="Aggregate" Width="0.9*">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
@@ -303,7 +306,31 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Left">
+                        <Button Content="Add new"
+                                Background="{DynamicResource DialogButtonBackgroundBrush}"
+                                Style="{StaticResource ActionBtn}"
+                                Width="100"
+                                Height="32"
+                                Margin="0,0,8,0"
+                                ToolTip="Add a new report parameter row and select it."
+                                Click="AddReportParameterButton_Click"/>
+                        <Button Content="↑"
+                                Background="{DynamicResource DialogButtonBackgroundBrush}"
+                                Style="{StaticResource ActionBtn}"
+                                Width="42"
+                                Height="32"
+                                Margin="0,0,4,0"
+                                ToolTip="Move selected parameter up."
+                                Click="MoveReportParameterUpButton_Click"/>
+                        <Button Content="↓"
+                                Background="{DynamicResource DialogButtonBackgroundBrush}"
+                                Style="{StaticResource ActionBtn}"
+                                Width="42"
+                                Height="32"
+                                Margin="0,0,14,0"
+                                ToolTip="Move selected parameter down."
+                                Click="MoveReportParameterDownButton_Click"/>
                         <Button Content="Load from report..."
                                 Background="{DynamicResource DialogButtonBackgroundBrush}"
                                 Style="{StaticResource ActionBtn}"
@@ -312,6 +339,22 @@
                                 Margin="0,0,8,0"
                                 ToolTip="Select parameters from an existing Reporting report version and import them into this grid."
                                 Click="LoadReportParametersButton_Click"/>
+                        <Button Content="Load definitions"
+                                Background="{DynamicResource DialogButtonBackgroundBrush}"
+                                Style="{StaticResource ActionBtn}"
+                                Width="140"
+                                Height="32"
+                                Margin="0,0,8,0"
+                                ToolTip="Load Reporting.ParameterDefinition rows into the Definition dropdown."
+                                Click="LoadParameterDefinitionsButton_Click"/>
+                        <Button Content="Save definition"
+                                Background="{DynamicResource DialogButtonBackgroundBrush}"
+                                Style="{StaticResource ActionBtn}"
+                                Width="140"
+                                Height="32"
+                                Margin="0,0,8,0"
+                                ToolTip="Save the selected row as Reporting.ParameterDefinition and reload definitions."
+                                Click="SaveParameterDefinitionButton_Click"/>
                         <Button Content="Apply definitions"
                                 Background="{DynamicResource DialogButtonBackgroundBrush}"
                                 Style="{StaticResource ActionBtn}"
@@ -331,6 +374,16 @@
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Ordinal" Binding="{Binding OrdinalNumber, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" EditingElementStyle="{StaticResource ReadableGridTextBox}" Width="68"/>
                         <DataGridTextColumn Header="Name" Binding="{Binding Name, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" EditingElementStyle="{StaticResource ReadableGridTextBox}" Width="112"/>
+                        <DataGridTemplateColumn Header="Definition" Width="150">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <DockPanel LastChildFill="True">
+                                        <Button Content="..." DockPanel.Dock="Right" Width="28" Margin="4,0,0,0" Click="SelectParameterDefinitionButton_Click"/>
+                                        <TextBlock Text="{Binding DefinitionName, TargetNullValue=''}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                    </DockPanel>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTextColumn Header="Prompt" Binding="{Binding Prompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" EditingElementStyle="{StaticResource ReadableGridTextBox}" Width="140"/>
                         <DataGridComboBoxColumn x:Name="ColParameterSqlType" Header="SqlType" SelectedItemBinding="{Binding SqlTypeName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="112"/>
                         <DataGridComboBoxColumn x:Name="ColParameterControlType" Header="Control" SelectedItemBinding="{Binding ControlType, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="94"/>
@@ -428,6 +481,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <DataGridComboBoxColumn x:Name="ColParameterCompareOperator" Header="Op" SelectedItemBinding="{Binding CompareOperator, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="52"/>
+                        <DataGridTextColumn Header="Compare template" Binding="{Binding ComparisonValueTemplate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" EditingElementStyle="{StaticResource ReadableGridTextBox}" Width="130"/>
                         <DataGridTemplateColumn Header="Default SQL" Width="82">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
@@ -670,11 +724,33 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="150"/>
                                 <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="190"/>
+                                <ColumnDefinition Width="135"/>
+                                <ColumnDefinition Width="90"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="8"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
                             <TextBlock Grid.Column="0" Text="Tablix width %:" Style="{StaticResource LabelText}"/>
                             <TextBox Grid.Column="1" x:Name="TxtTablixWidthPercent" Style="{StaticResource FieldBox}" Width="90" HorizontalAlignment="Left"/>
-                            <TextBlock Grid.Column="2" Text="Columns keep their automatic relative widths inside the tablix. Per-column alignment is edited on Main dataset." Foreground="{DynamicResource DialogSecondaryTextBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Column="2" Text="Grouping layout:" Style="{StaticResource LabelText}" Margin="16,0,0,0"/>
+                            <ComboBox Grid.Column="3" x:Name="CmbGroupRenderMode" Style="{StaticResource FieldCombo}" Width="170" HorizontalAlignment="Left" SelectedIndex="0">
+                                <ComboBoxItem Content="Band oriented" Tag="Band"/>
+                                <ComboBoxItem Content="Tabular horizontal" Tag="TabularHorizontal"/>
+                                <ComboBoxItem Content="Matrix / Crosstab" Tag="MatrixCrosstab"/>
+                            </ComboBox>
+                            <TextBlock Grid.Column="4" Text="Matrix cols:" Style="{StaticResource LabelText}" Margin="12,0,0,0" ToolTip="Expected dynamic matrix columns used to fit matrix width to the report page."/>
+                            <TextBox Grid.Column="5" x:Name="TxtMatrixExpectedColumnCount" Style="{StaticResource FieldBox}" Width="60" HorizontalAlignment="Left" Text="6" ToolTip="Expected dynamic matrix columns. Measure width is calculated so this count plus total column fits the tablix width."/>
+                            <TextBlock Grid.Column="6" Text="Columns keep their automatic relative widths inside the tablix." Foreground="{DynamicResource DialogSecondaryTextBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Tabular horizontal:" Style="{StaticResource LabelText}"/>
+                            <StackPanel Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="6" Orientation="Horizontal">
+                                <CheckBox x:Name="ChkTabularHorizontalSubtotals" Content="Show subtotals" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" Margin="0,0,18,0" VerticalAlignment="Center"/>
+                                <CheckBox x:Name="ChkTabularHorizontalGrandTotal" Content="Show grand total" Foreground="{DynamicResource DialogPrimaryTextBrush}" IsChecked="True" VerticalAlignment="Center"/>
+                            </StackPanel>
                         </Grid>
                     </GroupBox>
                 </StackPanel>
